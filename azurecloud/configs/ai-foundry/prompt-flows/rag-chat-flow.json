@@ -1,0 +1,143 @@
+{
+  "name": "rag-chat-flow",
+  "description": "RAG-based chat flow for enterprise knowledge copilot",
+  "version": "1.0.0",
+  "inputs": {
+    "query": {
+      "type": "string",
+      "description": "User query"
+    },
+    "conversation_history": {
+      "type": "array",
+      "description": "Previous conversation messages",
+      "default": []
+    },
+    "user_id": {
+      "type": "string",
+      "description": "User identifier for personalization"
+    },
+    "filters": {
+      "type": "object",
+      "description": "Search filters",
+      "default": {}
+    }
+  },
+  "outputs": {
+    "response": {
+      "type": "string",
+      "description": "Generated response"
+    },
+    "sources": {
+      "type": "array",
+      "description": "Source documents used"
+    },
+    "confidence": {
+      "type": "number",
+      "description": "Confidence score"
+    }
+  },
+  "nodes": [
+    {
+      "name": "query_rewrite",
+      "type": "llm",
+      "source": {
+        "type": "code",
+        "path": "query_rewrite.py"
+      },
+      "inputs": {
+        "query": "${inputs.query}",
+        "conversation_history": "${inputs.conversation_history}"
+      },
+      "connection": "azure-openai",
+      "model": "gpt-4o-mini"
+    },
+    {
+      "name": "generate_embedding",
+      "type": "embedding",
+      "source": {
+        "type": "code",
+        "path": "generate_embedding.py"
+      },
+      "inputs": {
+        "text": "${query_rewrite.output}"
+      },
+      "connection": "azure-openai",
+      "model": "text-embedding-3-large"
+    },
+    {
+      "name": "hybrid_search",
+      "type": "python",
+      "source": {
+        "type": "code",
+        "path": "hybrid_search.py"
+      },
+      "inputs": {
+        "query": "${query_rewrite.output}",
+        "embedding": "${generate_embedding.output}",
+        "filters": "${inputs.filters}",
+        "top_k": 10
+      },
+      "connection": "azure-search"
+    },
+    {
+      "name": "rerank_results",
+      "type": "python",
+      "source": {
+        "type": "code",
+        "path": "rerank_results.py"
+      },
+      "inputs": {
+        "query": "${query_rewrite.output}",
+        "results": "${hybrid_search.output}",
+        "top_k": 5
+      }
+    },
+    {
+      "name": "generate_response",
+      "type": "llm",
+      "source": {
+        "type": "code",
+        "path": "generate_response.py"
+      },
+      "inputs": {
+        "query": "${inputs.query}",
+        "context": "${rerank_results.output}",
+        "conversation_history": "${inputs.conversation_history}"
+      },
+      "connection": "azure-openai",
+      "model": "gpt-4o",
+      "parameters": {
+        "temperature": 0.1,
+        "max_tokens": 2000,
+        "top_p": 0.9
+      }
+    },
+    {
+      "name": "validate_response",
+      "type": "python",
+      "source": {
+        "type": "code",
+        "path": "validate_response.py"
+      },
+      "inputs": {
+        "response": "${generate_response.output}",
+        "context": "${rerank_results.output}"
+      }
+    },
+    {
+      "name": "format_output",
+      "type": "python",
+      "source": {
+        "type": "code",
+        "path": "format_output.py"
+      },
+      "inputs": {
+        "response": "${validate_response.output}",
+        "sources": "${rerank_results.output}"
+      }
+    }
+  ],
+  "environment": {
+    "python_requirements_txt": "requirements.txt"
+  }
+}

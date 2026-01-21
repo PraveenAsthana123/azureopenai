@@ -1,0 +1,352 @@
+# ==============================================================================
+# Enterprise Copilot - Copilot Studio Agent Configuration
+# This file documents the agent setup for Microsoft Copilot Studio
+# ==============================================================================
+
+agent:
+  name: "Enterprise Knowledge Assistant"
+  display_name: "Knowledge Bot"
+  description: "AI-powered assistant for company policies, procedures, and documentation"
+  icon: "knowledge-icon.png"
+
+  # Agent capabilities
+  capabilities:
+    - natural_language_understanding
+    - multi_turn_conversations
+    - document_retrieval
+    - citation_generation
+    - file_upload  # For future image support
+
+# ==============================================================================
+# TOPICS (Intents)
+# ==============================================================================
+topics:
+  # Greeting & Onboarding
+  - name: "Greeting"
+    trigger_phrases:
+      - "hello"
+      - "hi"
+      - "hey"
+      - "good morning"
+      - "help"
+    response: |
+      Hello! I'm your Enterprise Knowledge Assistant. I can help you find information about:
+
+      📋 **Company Policies** - HR, IT, Finance, Compliance
+      📝 **Procedures** - How-to guides and processes
+      💼 **Benefits** - Insurance, 401k, perks
+      🔒 **Security** - Password, VPN, data handling
+
+      Just ask me a question in plain English!
+
+      Example: "What is our vacation policy?"
+
+  # Policy Q&A (Main RAG Topic)
+  - name: "PolicyQA"
+    trigger_phrases:
+      - "what is"
+      - "how do i"
+      - "where can i find"
+      - "tell me about"
+      - "explain"
+      - "policy"
+      - "procedure"
+    action: "call_rag_endpoint"
+    fallback: "I couldn't find specific information about that. Try rephrasing your question or contact the relevant department directly."
+
+  # Document Summary
+  - name: "Summarize"
+    trigger_phrases:
+      - "summarize"
+      - "summary of"
+      - "key points"
+      - "overview of"
+      - "main points"
+    action: "call_rag_endpoint"
+    parameters:
+      intent_override: "summarize"
+
+  # Compare Topics
+  - name: "Compare"
+    trigger_phrases:
+      - "compare"
+      - "difference between"
+      - "versus"
+      - "vs"
+      - "which is better"
+    action: "call_rag_endpoint"
+    parameters:
+      intent_override: "compare"
+
+  # Feedback Collection
+  - name: "Feedback"
+    trigger_phrases:
+      - "feedback"
+      - "report issue"
+      - "wrong answer"
+      - "not helpful"
+    response: |
+      I'm sorry the response wasn't helpful. Your feedback helps me improve!
+
+      What type of issue did you experience?
+    quick_replies:
+      - "Incorrect information"
+      - "Missing information"
+      - "Irrelevant answer"
+      - "Technical error"
+      - "Other"
+    action: "collect_feedback"
+
+  # Escalation
+  - name: "Escalate"
+    trigger_phrases:
+      - "talk to human"
+      - "speak to someone"
+      - "contact support"
+      - "escalate"
+    response: |
+      I'll connect you with the right team:
+
+      **HR Questions**: hr@company.com or ext. 1234
+      **IT Support**: helpdesk@company.com or ext. 5678
+      **Finance**: finance@company.com or ext. 9012
+
+      Would you like me to create a support ticket?
+    quick_replies:
+      - "Yes, create ticket"
+      - "No, thanks"
+
+  # Out of Scope
+  - name: "OutOfScope"
+    trigger_phrases:
+      - "weather"
+      - "sports"
+      - "news"
+      - "stock price"
+      - "personal advice"
+    response: |
+      I'm focused on company knowledge and policies. I can't help with general topics like weather, news, or personal advice.
+
+      Is there something about company policies I can help you with instead?
+
+# ==============================================================================
+# ACTIONS (Tool Integrations)
+# ==============================================================================
+actions:
+  - name: "call_rag_endpoint"
+    type: "http_request"
+    method: "POST"
+    endpoint: "https://{{apim-endpoint}}/api/rag/query"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {user_token}"
+      X-Correlation-Id: "{conversation_id}"
+    body:
+      query: "{user_message}"
+      session_id: "{conversation_id}"
+      conversation_history: "{conversation_history}"
+      filters: {}
+    response_mapping:
+      answer: "response.answer"
+      citations: "response.citations"
+      confidence: "response.confidence"
+    display_template: |
+      {answer}
+
+      ---
+      **Sources:**
+      {#each citations}
+      - [{title}]({url})
+      {/each}
+
+  - name: "collect_feedback"
+    type: "http_request"
+    method: "POST"
+    endpoint: "https://{{apim-endpoint}}/api/rag/feedback"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {user_token}"
+    body:
+      query_id: "{last_query_id}"
+      session_id: "{conversation_id}"
+      feedback_type: "{selected_option}"
+      user_id: "{user_id}"
+
+  - name: "create_support_ticket"
+    type: "power_automate_flow"
+    flow_id: "{{support-ticket-flow-id}}"
+    inputs:
+      title: "Copilot Escalation: {topic}"
+      description: "{conversation_summary}"
+      user_email: "{user_email}"
+      priority: "Medium"
+
+# ==============================================================================
+# AUTHENTICATION
+# ==============================================================================
+authentication:
+  type: "azure_ad"
+  tenant_id: "{{tenant-id}}"
+  client_id: "{{copilot-client-id}}"
+  scopes:
+    - "api://enterprise-ai-platform/user_impersonation"
+  required_claims:
+    - "oid"
+    - "groups"
+    - "name"
+    - "email"
+
+# ==============================================================================
+# CHANNELS
+# ==============================================================================
+channels:
+  - name: "Microsoft Teams"
+    enabled: true
+    settings:
+      app_id: "{{teams-app-id}}"
+      display_name: "Knowledge Assistant"
+      short_description: "Ask questions about company policies"
+      long_description: "Enterprise AI assistant for HR, IT, Finance, and company documentation"
+      privacy_url: "https://company.com/privacy"
+      terms_url: "https://company.com/terms"
+
+  - name: "Web Chat"
+    enabled: true
+    settings:
+      allowed_origins:
+        - "https://portal.company.com"
+        - "https://intranet.company.com"
+      theme:
+        primary_color: "#0078D4"
+        font_family: "Segoe UI"
+
+  - name: "API"
+    enabled: true
+    settings:
+      rate_limit: "60/minute"
+      authentication: "required"
+
+# ==============================================================================
+# CONVERSATION SETTINGS
+# ==============================================================================
+conversation:
+  # Session management
+  session_timeout_minutes: 30
+  max_turns_per_session: 50
+
+  # Memory
+  memory:
+    enabled: true
+    type: "short_term"
+    context_window: 10  # Last N turns to include
+
+  # Response settings
+  response:
+    max_length: 2000
+    include_citations: true
+    confidence_threshold: 0.6
+
+  # Fallback behavior
+  fallback:
+    low_confidence_message: "I'm not fully confident in this answer. You may want to verify with the relevant department."
+    no_results_message: "I couldn't find information about that topic. Try rephrasing your question or contact the relevant team."
+    error_message: "I'm having trouble processing your request. Please try again or contact IT support."
+
+# ==============================================================================
+# ANALYTICS & MONITORING
+# ==============================================================================
+analytics:
+  enabled: true
+  app_insights_key: "{{app-insights-key}}"
+
+  tracked_events:
+    - "conversation_started"
+    - "message_received"
+    - "rag_query_executed"
+    - "citation_clicked"
+    - "feedback_submitted"
+    - "escalation_requested"
+    - "session_ended"
+
+  custom_dimensions:
+    - "topic_name"
+    - "intent_detected"
+    - "confidence_score"
+    - "response_latency_ms"
+    - "citation_count"
+
+# ==============================================================================
+# CONTENT MODERATION
+# ==============================================================================
+moderation:
+  enabled: true
+
+  input_filters:
+    - type: "profanity"
+      action: "warn"
+    - type: "pii_detection"
+      action: "redact"
+    - type: "prompt_injection"
+      action: "block"
+
+  output_filters:
+    - type: "pii_detection"
+      action: "redact"
+    - type: "sensitive_topics"
+      action: "review"
+
+# ==============================================================================
+# TESTING & VALIDATION
+# ==============================================================================
+testing:
+  # Test conversations for validation
+  test_cases:
+    - input: "What is our vacation policy?"
+      expected_intent: "PolicyQA"
+      expected_contains: ["PTO", "days", "vacation"]
+
+    - input: "How do I submit an expense report?"
+      expected_intent: "PolicyQA"
+      expected_contains: ["Concur", "receipt", "submit"]
+
+    - input: "Compare health plans"
+      expected_intent: "Compare"
+      expected_contains: ["Basic", "Premium", "deductible"]
+
+    - input: "Hello"
+      expected_intent: "Greeting"
+      expected_contains: ["help", "policies"]
+
+    - input: "What's the weather?"
+      expected_intent: "OutOfScope"
+      expected_contains: ["can't help", "company"]
+
+# ==============================================================================
+# DEPLOYMENT
+# ==============================================================================
+deployment:
+  environments:
+    - name: "dev"
+      endpoint: "https://dev-apim.company.com"
+      enabled: true
+
+    - name: "staging"
+      endpoint: "https://staging-apim.company.com"
+      enabled: true
+
+    - name: "production"
+      endpoint: "https://apim.company.com"
+      enabled: false  # Enable after testing
+
+  rollout:
+    type: "staged"
+    stages:
+      - name: "pilot"
+        groups: ["copilot-pilot-users"]
+        percentage: 5
+      - name: "department"
+        groups: ["IT-Department", "HR-Department"]
+        percentage: 20
+      - name: "general"
+        groups: ["All-Employees"]
+        percentage: 100

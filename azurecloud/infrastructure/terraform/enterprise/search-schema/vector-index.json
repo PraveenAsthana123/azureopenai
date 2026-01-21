@@ -1,0 +1,389 @@
+{
+  "name": "enterprise-knowledge-index",
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "key": true,
+      "filterable": true,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "chunk_id",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "document_id",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "title",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": true,
+      "analyzer": "en.microsoft"
+    },
+    {
+      "name": "chunk_text",
+      "type": "Edm.String",
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "searchable": true,
+      "analyzer": "en.microsoft"
+    },
+    {
+      "name": "chunk_order",
+      "type": "Edm.Int32",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "heading_path",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": true
+    },
+    {
+      "name": "section_name",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": true
+    },
+    {
+      "name": "page_number",
+      "type": "Edm.Int32",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "doc_type",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "business_unit",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "department",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "region",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "classification",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "status",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "language",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "effective_date",
+      "type": "Edm.DateTimeOffset",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "expiry_date",
+      "type": "Edm.DateTimeOffset",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "owner",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "source_system",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": false
+    },
+    {
+      "name": "source_uri",
+      "type": "Edm.String",
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "acl_groups",
+      "type": "Collection(Edm.String)",
+      "filterable": true,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "acl_deny_groups",
+      "type": "Collection(Edm.String)",
+      "filterable": true,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "keywords",
+      "type": "Collection(Edm.String)",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": true
+    },
+    {
+      "name": "entities",
+      "type": "Collection(Edm.String)",
+      "filterable": true,
+      "sortable": false,
+      "facetable": true,
+      "searchable": true
+    },
+    {
+      "name": "token_count",
+      "type": "Edm.Int32",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "embedding_model",
+      "type": "Edm.String",
+      "filterable": true,
+      "sortable": false,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "chunk_vector",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "dimensions": 3072,
+      "vectorSearchProfile": "vector-profile-hnsw"
+    },
+    {
+      "name": "title_vector",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "dimensions": 3072,
+      "vectorSearchProfile": "vector-profile-hnsw"
+    },
+    {
+      "name": "created_at",
+      "type": "Edm.DateTimeOffset",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "updated_at",
+      "type": "Edm.DateTimeOffset",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    },
+    {
+      "name": "indexed_at",
+      "type": "Edm.DateTimeOffset",
+      "filterable": true,
+      "sortable": true,
+      "facetable": false,
+      "searchable": false
+    }
+  ],
+  "vectorSearch": {
+    "algorithms": [
+      {
+        "name": "hnsw-algorithm",
+        "kind": "hnsw",
+        "hnswParameters": {
+          "m": 4,
+          "efConstruction": 400,
+          "efSearch": 500,
+          "metric": "cosine"
+        }
+      },
+      {
+        "name": "exhaustive-knn-algorithm",
+        "kind": "exhaustiveKnn",
+        "exhaustiveKnnParameters": {
+          "metric": "cosine"
+        }
+      }
+    ],
+    "profiles": [
+      {
+        "name": "vector-profile-hnsw",
+        "algorithm": "hnsw-algorithm",
+        "vectorizer": "azure-openai-vectorizer"
+      },
+      {
+        "name": "vector-profile-exhaustive",
+        "algorithm": "exhaustive-knn-algorithm",
+        "vectorizer": "azure-openai-vectorizer"
+      }
+    ],
+    "vectorizers": [
+      {
+        "name": "azure-openai-vectorizer",
+        "kind": "azureOpenAI",
+        "azureOpenAIParameters": {
+          "resourceUri": "https://{{openai-resource-name}}.openai.azure.com",
+          "deploymentId": "text-embedding-3-large",
+          "modelName": "text-embedding-3-large",
+          "authIdentity": {
+            "type": "systemAssigned"
+          }
+        }
+      }
+    ]
+  },
+  "semantic": {
+    "configurations": [
+      {
+        "name": "semantic-config",
+        "prioritizedFields": {
+          "titleField": {
+            "fieldName": "title"
+          },
+          "prioritizedContentFields": [
+            {
+              "fieldName": "chunk_text"
+            },
+            {
+              "fieldName": "heading_path"
+            }
+          ],
+          "prioritizedKeywordsFields": [
+            {
+              "fieldName": "keywords"
+            },
+            {
+              "fieldName": "entities"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "suggesters": [
+    {
+      "name": "suggest-title",
+      "searchMode": "analyzingInfixMatching",
+      "sourceFields": ["title", "keywords"]
+    }
+  ],
+  "scoringProfiles": [
+    {
+      "name": "recency-boost",
+      "text": {
+        "weights": {
+          "title": 3,
+          "chunk_text": 1,
+          "keywords": 2
+        }
+      },
+      "functions": [
+        {
+          "type": "freshness",
+          "fieldName": "effective_date",
+          "boost": 2,
+          "interpolation": "linear",
+          "freshness": {
+            "boostingDuration": "P365D"
+          }
+        }
+      ],
+      "functionAggregation": "sum"
+    },
+    {
+      "name": "relevance-boost",
+      "text": {
+        "weights": {
+          "title": 5,
+          "chunk_text": 2,
+          "heading_path": 3,
+          "keywords": 2
+        }
+      }
+    }
+  ],
+  "corsOptions": {
+    "allowedOrigins": ["*"],
+    "maxAgeInSeconds": 300
+  }
+}

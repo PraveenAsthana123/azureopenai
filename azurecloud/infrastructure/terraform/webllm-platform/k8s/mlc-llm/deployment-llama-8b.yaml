@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlc-llm-llama-3-1-8b
+  namespace: mlc-llm
+  labels:
+    app: mlc-llm
+    model: llama-3-1-8b
+    tier: inference
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mlc-llm
+      model: llama-3-1-8b
+  template:
+    metadata:
+      labels:
+        app: mlc-llm
+        model: llama-3-1-8b
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      nodeSelector:
+        gpu-type: t4
+        agentpool: gput4
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        - key: "sku"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      containers:
+        - name: mlc-llm
+          image: webllmplatformacr.azurecr.io/mlc-llm:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: MODEL_NAME
+              value: "llama-3-1-8b"
+            - name: MODEL_ID
+              value: "meta-llama/Llama-3.1-8B-Instruct"
+            - name: QUANTIZATION
+              value: "q4f16_1"
+            - name: MAX_BATCH_SIZE
+              value: "64"
+            - name: TENSOR_PARALLEL_SHARDS
+              value: "1"
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: "32Gi"
+            requests:
+              nvidia.com/gpu: 1
+              memory: "32Gi"
+              cpu: "4"
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: model-cache
+              mountPath: /models
+            - name: shm
+              mountPath: /dev/shm
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 180
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: mlc-llm-config
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlc-llm-llama-3-1-8b
+  namespace: mlc-llm
+  labels:
+    app: mlc-llm
+    model: llama-3-1-8b
+spec:
+  selector:
+    app: mlc-llm
+    model: llama-3-1-8b
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mlc-llm-llama-3-1-8b-hpa
+  namespace: mlc-llm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mlc-llm-llama-3-1-8b
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlc-llm-codellama-34b
+  namespace: mlc-llm
+  labels:
+    app: mlc-llm
+    model: codellama-34b
+    tier: inference
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mlc-llm
+      model: codellama-34b
+  template:
+    metadata:
+      labels:
+        app: mlc-llm
+        model: codellama-34b
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      nodeSelector:
+        gpu-type: a100
+        agentpool: gpua100
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      containers:
+        - name: mlc-llm
+          image: webllmplatformacr.azurecr.io/mlc-llm:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: MODEL_NAME
+              value: "codellama-34b"
+            - name: MODEL_ID
+              value: "codellama/CodeLlama-34b-Instruct-hf"
+            - name: QUANTIZATION
+              value: "q4f16_1"
+            - name: MAX_BATCH_SIZE
+              value: "32"
+            - name: TENSOR_PARALLEL_SHARDS
+              value: "2"
+          resources:
+            limits:
+              nvidia.com/gpu: 2
+              memory: "80Gi"
+            requests:
+              nvidia.com/gpu: 2
+              memory: "80Gi"
+              cpu: "4"
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: model-cache
+              mountPath: /models
+            - name: shm
+              mountPath: /dev/shm
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 240
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 45
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: mlc-llm-config
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 100Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlc-llm-codellama-34b
+  namespace: mlc-llm
+  labels:
+    app: mlc-llm
+    model: codellama-34b
+spec:
+  selector:
+    app: mlc-llm
+    model: codellama-34b
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mlc-llm-codellama-34b-hpa
+  namespace: mlc-llm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mlc-llm-codellama-34b
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,179 @@
+$schema: https://azuremlschemas.azureedge.net/promptflow/latest/Flow.schema.json
+type: flow
+name: rag-chat-prod
+display_name: Enterprise RAG Chat (Production)
+description: |
+  Multi-modal RAG chat with secure hybrid retrieval, intent classification,
+  query rewriting, and citation extraction. Production-ready with evaluation outputs.
+
+# Flow metadata
+tags:
+  environment: production
+  version: "1.0.0"
+  owner: ai-platform-team
+
+# =============================================================================
+# INPUTS
+# =============================================================================
+inputs:
+  question:
+    type: string
+    description: User's natural language question
+  user_id:
+    type: string
+    description: User identifier for RBAC filtering
+  session_id:
+    type: string
+    description: Session ID for conversation history
+  tenant_id:
+    type: string
+    description: Tenant identifier for multi-tenancy
+    default: "default"
+
+# =============================================================================
+# OUTPUTS (Evaluation-ready)
+# =============================================================================
+outputs:
+  answer:
+    type: string
+    reference: ${generate_answer.output.answer}
+    description: Generated answer with citations
+  citations:
+    type: object
+    reference: ${extract_citations.output.citations}
+    description: Extracted citations with metadata
+  retrieved_chunks:
+    type: object
+    reference: ${retrieve.output.chunks}
+    description: Retrieved context chunks for evaluation
+  context:
+    type: string
+    reference: ${build_context.output.context_text}
+    description: Assembled context for groundedness evaluation
+  latency_breakdown:
+    type: object
+    reference: ${generate_answer.output.latency}
+    description: Component latency metrics
+
+# =============================================================================
+# NODES
+# =============================================================================
+nodes:
+# -----------------------------------------------------------------------------
+# 1) Intent Classification
+# -----------------------------------------------------------------------------
+- name: classify_intent
+  type: python
+  source:
+    type: code
+    path: tools/classify_intent.py
+  inputs:
+    question: ${inputs.question}
+  description: Classify query intent (greeting, doc_search, follow_up, general)
+
+# -----------------------------------------------------------------------------
+# 2) Query Rewrite (for follow-up queries)
+# -----------------------------------------------------------------------------
+- name: rewrite_query
+  type: python
+  source:
+    type: code
+    path: tools/rewrite_query.py
+  inputs:
+    question: ${inputs.question}
+    intent: ${classify_intent.output.intent}
+    session_id: ${inputs.session_id}
+    user_id: ${inputs.user_id}
+  description: Resolve coreferences in follow-up queries using conversation history
+
+# -----------------------------------------------------------------------------
+# 3) Secure Hybrid Retrieval
+# -----------------------------------------------------------------------------
+- name: retrieve
+  type: python
+  source:
+    type: code
+    path: tools/retrieve_hybrid.py
+  inputs:
+    query: ${rewrite_query.output.transformed_query}
+    user_id: ${inputs.user_id}
+    tenant_id: ${inputs.tenant_id}
+  description: Hybrid search with RBAC security trimming
+
+# -----------------------------------------------------------------------------
+# 4) Context Assembly
+# -----------------------------------------------------------------------------
+- name: build_context
+  type: python
+  source:
+    type: code
+    path: tools/build_context.py
+  inputs:
+    question: ${inputs.question}
+    transformed_query: ${rewrite_query.output.transformed_query}
+    chunks: ${retrieve.output.chunks}
+    session_id: ${inputs.session_id}
+    user_id: ${inputs.user_id}
+  description: Build grounded prompt with history and retrieved chunks
+
+# -----------------------------------------------------------------------------
+# 5) LLM Generation (Azure OpenAI)
+# -----------------------------------------------------------------------------
+- name: generate_answer
+  type: llm
+  source:
+    type: code
+    path: tools/generate_answer.py
+  inputs:
+    prompt: ${build_context.output.prompt}
+    system_prompt: ${build_context.output.system_prompt}
+    model_config:
+      deployment_name: gpt-4o-mini
+      temperature: 0.2
+      max_tokens: 1000
+      top_p: 0.95
+  description: Generate grounded answer with citations
+
+# -----------------------------------------------------------------------------
+# 6) Citation Extraction
+# -----------------------------------------------------------------------------
+- name: extract_citations
+  type: python
+  source:
+    type: code
+    path: tools/extract_citations.py
+  inputs:
+    answer: ${generate_answer.output.answer}
+    chunks: ${retrieve.output.chunks}
+  description: Parse citations and link to source documents
+
+# -----------------------------------------------------------------------------
+# 7) Safety Check (Output)
+# -----------------------------------------------------------------------------
+- name: safety_check
+  type: python
+  source:
+    type: code
+    path: tools/safety_check.py
+  inputs:
+    answer: ${generate_answer.output.answer}
+    user_id: ${inputs.user_id}
+    tenant_id: ${inputs.tenant_id}
+  description: Validate output for safety compliance
+
+# =============================================================================
+# CONNECTIONS (configured in Foundry)
+# =============================================================================
+connections:
+  azure_openai:
+    type: AzureOpenAI
+    api_base: ${env:AZURE_OPENAI_ENDPOINT}
+    api_version: "2024-02-15-preview"
+  azure_search:
+    type: CognitiveSearch
+    api_base: ${env:AZURE_SEARCH_ENDPOINT}
+  cosmos_db:
+    type: Custom
+    configs:
+      uri: ${env:COSMOS_URI}
+      database: ${env:COSMOS_DB}

@@ -1,0 +1,400 @@
+// =============================================================================
+// Executive Governance Dashboard KQL Queries
+// Enterprise RAG Platform - Phase 10
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// SECTION 1: Policy Compliance Overview
+// -----------------------------------------------------------------------------
+
+// 1.1 Policy Compliance Score by Tenant (Last 24 Hours)
+let PolicyCompliance =
+customEvents
+| where timestamp > ago(24h)
+| where name == "PolicyEvaluation"
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| extend policy_id = tostring(customDimensions.policy_id)
+| extend action = tostring(customDimensions.action)
+| extend compliant = action in ("allow", "warn")
+| summarize
+    TotalEvaluations = count(),
+    CompliantCount = countif(compliant),
+    DeniedCount = countif(action == "deny"),
+    WarningCount = countif(action == "warn")
+    by tenant_id
+| extend ComplianceScore = round(todouble(CompliantCount) / TotalEvaluations * 100, 2)
+| project tenant_id, ComplianceScore, TotalEvaluations, DeniedCount, WarningCount
+| order by ComplianceScore asc;
+PolicyCompliance
+
+// 1.2 Policy Violations Trend (Last 7 Days)
+customEvents
+| where timestamp > ago(7d)
+| where name == "PolicyViolation"
+| extend severity = tostring(customDimensions.severity)
+| extend policy_type = tostring(customDimensions.policy_type)
+| summarize ViolationCount = count() by bin(timestamp, 1h), severity
+| render timechart
+
+// 1.3 Top 10 Most Violated Policies
+customEvents
+| where timestamp > ago(7d)
+| where name == "PolicyViolation"
+| extend policy_id = tostring(customDimensions.policy_id)
+| extend policy_name = tostring(customDimensions.policy_name)
+| summarize ViolationCount = count() by policy_id, policy_name
+| top 10 by ViolationCount desc
+| project policy_name, ViolationCount
+
+// 1.4 Policy Enforcement Actions Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "PolicyEnforcement"
+| extend action = tostring(customDimensions.action)
+| summarize ActionCount = count() by action
+| render piechart
+
+// -----------------------------------------------------------------------------
+// SECTION 2: Self-Audit Findings
+// -----------------------------------------------------------------------------
+
+// 2.1 Audit Findings Summary by Severity
+customEvents
+| where timestamp > ago(7d)
+| where name == "AuditFinding"
+| extend severity = tostring(customDimensions.severity)
+| extend status = tostring(customDimensions.status)
+| extend check_type = tostring(customDimensions.check_type)
+| summarize
+    FindingCount = count(),
+    OpenCount = countif(status == "open"),
+    ResolvedCount = countif(status == "resolved")
+    by severity
+| extend OpenRate = round(todouble(OpenCount) / FindingCount * 100, 2)
+| order by case(severity, "critical", 1, "high", 2, "medium", 3, "low", 4, 5) asc
+
+// 2.2 Grounding Issues (Hallucination Detection)
+customEvents
+| where timestamp > ago(24h)
+| where name == "GroundingCheck"
+| extend grounding_score = todouble(customDimensions.grounding_score)
+| extend session_id = tostring(customDimensions.session_id)
+| where grounding_score < 0.7
+| summarize
+    LowGroundingCount = count(),
+    AvgGroundingScore = avg(grounding_score),
+    MinGroundingScore = min(grounding_score)
+    by bin(timestamp, 1h)
+| render timechart
+
+// 2.3 PII Detection Events
+customEvents
+| where timestamp > ago(7d)
+| where name == "PIIDetection"
+| extend pii_type = tostring(customDimensions.pii_type)
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| summarize PIICount = count() by pii_type
+| render barchart
+
+// 2.4 Cross-Tenant Contamination Alerts
+customEvents
+| where timestamp > ago(30d)
+| where name == "CrossTenantAlert"
+| extend tenant_id = tostring(customDimensions.requesting_tenant)
+| extend foreign_tenant = tostring(customDimensions.foreign_tenant)
+| extend session_id = tostring(customDimensions.session_id)
+| project timestamp, tenant_id, foreign_tenant, session_id
+| order by timestamp desc
+
+// 2.5 Model Drift Detection
+customEvents
+| where timestamp > ago(7d)
+| where name == "ModelDrift"
+| extend model_id = tostring(customDimensions.model_id)
+| extend drift_type = tostring(customDimensions.drift_type)
+| extend deviation = todouble(customDimensions.deviation_sigmas)
+| summarize
+    DriftEvents = count(),
+    MaxDeviation = max(deviation),
+    AvgDeviation = avg(deviation)
+    by model_id, drift_type
+| order by MaxDeviation desc
+
+// -----------------------------------------------------------------------------
+// SECTION 3: Model Lifecycle Management
+// -----------------------------------------------------------------------------
+
+// 3.1 Active Model Deployments
+customEvents
+| where timestamp > ago(1h)
+| where name == "ModelDeploymentStatus"
+| extend model_id = tostring(customDimensions.model_id)
+| extend version = tostring(customDimensions.version)
+| extend stage = tostring(customDimensions.stage)
+| extend traffic_percentage = todouble(customDimensions.traffic_percentage)
+| summarize arg_max(timestamp, *) by model_id
+| project model_id, version, stage, traffic_percentage, timestamp
+| order by model_id asc
+
+// 3.2 Canary Deployment Health
+customEvents
+| where timestamp > ago(24h)
+| where name == "CanaryHealthCheck"
+| extend deployment_id = tostring(customDimensions.deployment_id)
+| extend model_id = tostring(customDimensions.model_id)
+| extend error_rate = todouble(customDimensions.error_rate)
+| extend latency_p99 = todouble(customDimensions.latency_p99_ms)
+| extend quality_score = todouble(customDimensions.quality_score)
+| summarize
+    AvgErrorRate = avg(error_rate),
+    AvgLatencyP99 = avg(latency_p99),
+    AvgQualityScore = avg(quality_score)
+    by bin(timestamp, 15m), deployment_id
+| render timechart
+
+// 3.3 Model Evaluation Results (Last 30 Days)
+customEvents
+| where timestamp > ago(30d)
+| where name == "ModelEvaluation"
+| extend candidate_version = tostring(customDimensions.candidate_version)
+| extend baseline_version = tostring(customDimensions.baseline_version)
+| extend status = tostring(customDimensions.status)
+| extend relevance_score = todouble(customDimensions.relevance_score)
+| summarize
+    EvaluationCount = count(),
+    PassedCount = countif(status == "passed"),
+    FailedCount = countif(status == "failed"),
+    AvgRelevanceScore = avg(relevance_score)
+    by bin(timestamp, 1d)
+| extend PassRate = round(todouble(PassedCount) / EvaluationCount * 100, 2)
+
+// 3.4 Model Rollbacks
+customEvents
+| where timestamp > ago(30d)
+| where name == "ModelRollback"
+| extend model_id = tostring(customDimensions.model_id)
+| extend version = tostring(customDimensions.version)
+| extend reason = tostring(customDimensions.reason)
+| project timestamp, model_id, version, reason
+| order by timestamp desc
+
+// -----------------------------------------------------------------------------
+// SECTION 4: Multi-Agent Orchestration
+// -----------------------------------------------------------------------------
+
+// 4.1 Agent Task Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "AgentTaskCompleted"
+| extend agent_type = tostring(customDimensions.agent_type)
+| extend task_type = tostring(customDimensions.task_type)
+| extend duration_ms = todouble(customDimensions.duration_ms)
+| summarize
+    TaskCount = count(),
+    AvgDurationMs = avg(duration_ms),
+    P95DurationMs = percentile(duration_ms, 95)
+    by agent_type
+| render columnchart
+
+// 4.2 Agent Errors by Type
+customEvents
+| where timestamp > ago(24h)
+| where name == "AgentError"
+| extend agent_type = tostring(customDimensions.agent_type)
+| extend error_type = tostring(customDimensions.error_type)
+| summarize ErrorCount = count() by agent_type, error_type
+| order by ErrorCount desc
+
+// 4.3 Workflow Execution Patterns
+customEvents
+| where timestamp > ago(7d)
+| where name == "WorkflowCompleted"
+| extend plan_id = tostring(customDimensions.plan_id)
+| extend tasks_executed = toint(customDimensions.tasks_executed)
+| extend total_duration_ms = todouble(customDimensions.total_duration_ms)
+| extend success = tobool(customDimensions.success)
+| summarize
+    WorkflowCount = count(),
+    SuccessCount = countif(success),
+    AvgTaskCount = avg(tasks_executed),
+    AvgDurationMs = avg(total_duration_ms)
+    by bin(timestamp, 1h)
+| extend SuccessRate = round(todouble(SuccessCount) / WorkflowCount * 100, 2)
+| render timechart
+
+// 4.4 Human-in-the-Loop Approvals
+customEvents
+| where timestamp > ago(7d)
+| where name == "ApprovalRequest"
+| extend approval_type = tostring(customDimensions.approval_type)
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| extend status = tostring(customDimensions.status)
+| extend wait_time_minutes = todouble(customDimensions.wait_time_minutes)
+| summarize
+    RequestCount = count(),
+    ApprovedCount = countif(status == "approved"),
+    RejectedCount = countif(status == "rejected"),
+    PendingCount = countif(status == "pending"),
+    AvgWaitTimeMinutes = avg(wait_time_minutes)
+    by approval_type
+
+// -----------------------------------------------------------------------------
+// SECTION 5: Knowledge Operating System (KOS)
+// -----------------------------------------------------------------------------
+
+// 5.1 Knowledge Ingestion Rate
+customEvents
+| where timestamp > ago(7d)
+| where name == "KnowledgeIngested"
+| extend knowledge_type = tostring(customDimensions.knowledge_type)
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| summarize IngestCount = count() by bin(timestamp, 1h), knowledge_type
+| render timechart
+
+// 5.2 Knowledge Query Performance
+customEvents
+| where timestamp > ago(24h)
+| where name == "KnowledgeQuery"
+| extend latency_ms = todouble(customDimensions.latency_ms)
+| extend cache_hit = tobool(customDimensions.cache_hit)
+| extend reasoning_depth = toint(customDimensions.reasoning_depth)
+| summarize
+    QueryCount = count(),
+    AvgLatencyMs = avg(latency_ms),
+    P95LatencyMs = percentile(latency_ms, 95),
+    CacheHitRate = round(countif(cache_hit) * 100.0 / count(), 2)
+    by bin(timestamp, 1h)
+| render timechart
+
+// 5.3 Knowledge Graph Statistics
+customEvents
+| where timestamp > ago(1h)
+| where name == "KnowledgeGraphStats"
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| extend node_count = toint(customDimensions.node_count)
+| extend edge_count = toint(customDimensions.edge_count)
+| extend entity_count = toint(customDimensions.entity_count)
+| summarize arg_max(timestamp, *) by tenant_id
+| project tenant_id, node_count, edge_count, entity_count, timestamp
+
+// 5.4 Multi-Hop Reasoning Usage
+customEvents
+| where timestamp > ago(7d)
+| where name == "MultiHopReasoning"
+| extend reasoning_depth = toint(customDimensions.reasoning_depth)
+| extend items_used = toint(customDimensions.items_used)
+| extend confidence = todouble(customDimensions.confidence)
+| summarize
+    ReasoningCount = count(),
+    AvgDepth = avg(reasoning_depth),
+    AvgItemsUsed = avg(items_used),
+    AvgConfidence = avg(confidence)
+    by bin(timestamp, 1d)
+
+// -----------------------------------------------------------------------------
+// SECTION 6: Executive Summary Metrics
+// -----------------------------------------------------------------------------
+
+// 6.1 Platform Health Score
+let TimeWindow = ago(24h);
+let PolicyScore = toscalar(
+    customEvents
+    | where timestamp > TimeWindow
+    | where name == "PolicyEvaluation"
+    | summarize Score = countif(tostring(customDimensions.action) in ("allow", "warn")) * 100.0 / count()
+);
+let AuditScore = toscalar(
+    customEvents
+    | where timestamp > TimeWindow
+    | where name == "AuditFinding"
+    | summarize Score = 100.0 - (countif(tostring(customDimensions.severity) == "critical") * 20) - (countif(tostring(customDimensions.severity) == "high") * 10)
+);
+let ModelScore = toscalar(
+    customEvents
+    | where timestamp > TimeWindow
+    | where name == "ModelDeploymentStatus"
+    | summarize Score = countif(tostring(customDimensions.stage) == "production") * 100.0 / count()
+);
+let LatencyScore = toscalar(
+    customEvents
+    | where timestamp > TimeWindow
+    | where name == "RAGQuery"
+    | summarize Score = countif(todouble(customDimensions.latency_ms) < 3000) * 100.0 / count()
+);
+print
+    OverallHealthScore = round((PolicyScore + AuditScore + ModelScore + LatencyScore) / 4, 2),
+    PolicyComplianceScore = round(PolicyScore, 2),
+    AuditHealthScore = round(AuditScore, 2),
+    ModelReadinessScore = round(ModelScore, 2),
+    PerformanceScore = round(LatencyScore, 2)
+
+// 6.2 Tenant Usage Summary (Last 30 Days)
+customEvents
+| where timestamp > ago(30d)
+| where name in ("RAGQuery", "KnowledgeIngested", "AgentTaskCompleted")
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| summarize
+    TotalQueries = countif(name == "RAGQuery"),
+    DocumentsIngested = countif(name == "KnowledgeIngested"),
+    AgentTasks = countif(name == "AgentTaskCompleted")
+    by tenant_id
+| order by TotalQueries desc
+
+// 6.3 Cost Attribution by Tenant
+customEvents
+| where timestamp > ago(30d)
+| where name == "LLMUsage"
+| extend tenant_id = tostring(customDimensions.tenant_id)
+| extend model = tostring(customDimensions.model)
+| extend input_tokens = toint(customDimensions.input_tokens)
+| extend output_tokens = toint(customDimensions.output_tokens)
+| extend estimated_cost = todouble(customDimensions.estimated_cost_usd)
+| summarize
+    TotalCalls = count(),
+    TotalInputTokens = sum(input_tokens),
+    TotalOutputTokens = sum(output_tokens),
+    EstimatedCost = sum(estimated_cost)
+    by tenant_id, model
+| order by EstimatedCost desc
+
+// 6.4 SLO Compliance (Last 7 Days)
+let SLOTargets = datatable(metric:string, target:real)
+[
+    "availability", 99.9,
+    "latency_p95_ms", 3000,
+    "error_rate", 1.0,
+    "grounding_score", 80.0
+];
+customEvents
+| where timestamp > ago(7d)
+| where name == "SLOMetric"
+| extend metric = tostring(customDimensions.metric)
+| extend value = todouble(customDimensions.value)
+| summarize AvgValue = avg(value) by metric
+| join kind=inner SLOTargets on metric
+| extend
+    SLOMet = case(
+        metric == "latency_p95_ms" or metric == "error_rate", AvgValue <= target,
+        AvgValue >= target
+    ),
+    Variance = round((AvgValue - target) / target * 100, 2)
+| project metric, target, AvgValue, SLOMet, Variance
+
+// 6.5 Security Posture Summary
+customEvents
+| where timestamp > ago(24h)
+| where name in ("ACLViolation", "CrossTenantAlert", "PIIDetection", "UnauthorizedAccess")
+| extend event_type = name
+| extend severity = tostring(customDimensions.severity)
+| summarize
+    TotalEvents = count(),
+    CriticalCount = countif(severity == "critical"),
+    HighCount = countif(severity == "high")
+    by event_type
+| extend RiskLevel = case(
+    CriticalCount > 0, "CRITICAL",
+    HighCount > 5, "HIGH",
+    TotalEvents > 20, "MEDIUM",
+    "LOW"
+)
+| order by case(RiskLevel, "CRITICAL", 1, "HIGH", 2, "MEDIUM", 3, 4) asc

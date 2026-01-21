@@ -1,0 +1,372 @@
+# ============================================================================
+# Azure DevOps Multi-Stage Pipeline for Enterprise RAG Platform
+# ============================================================================
+# Features:
+# - Build Python Function artifact
+# - Unit tests with coverage
+# - Offline RAG evaluation gate
+# - Deploy to staging slot
+# - Smoke test + staging evaluation
+# - Blue/green swap to production
+# - Auto-rollback on score regression
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.md'
+      - 'docs/**'
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  pythonVersion: '3.10'
+  artifactName: 'functionpkg'
+  evalDropThreshold: '0.10'
+  evalPassThreshold: '0.70'
+  stagingSlot: 'staging'
+
+  # These should be set in Azure DevOps Library
+  # - AZURE_SERVICE_CONNECTION
+  # - AZURE_RG
+  # - FUNCTIONAPP_NAME
+  # - STAGING_URL
+  # - AZURE_OPENAI_ENDPOINT
+
+stages:
+# ============================================================================
+# STAGE 1: BUILD, TEST, AND EVALUATE
+# ============================================================================
+- stage: Build_Test_Eval
+  displayName: 'Build, Test & Evaluate'
+  jobs:
+  - job: BuildTestEval
+    displayName: 'Build, Unit Test, RAG Evaluation'
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+      fetchDepth: 1
+
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python $(pythonVersion)'
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        addToPath: true
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r azure-function-rag/requirements.txt
+        pip install -r eval/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov
+      displayName: 'Install dependencies'
+
+    - script: |
+        pytest tests/ -v \
+          --cov=src \
+          --cov-report=xml:$(Build.SourcesDirectory)/coverage.xml \
+          --junitxml=$(Build.SourcesDirectory)/test-results.xml
+      displayName: 'Run unit tests'
+      continueOnError: false
+
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+        searchFolder: '$(Build.SourcesDirectory)'
+        failTaskOnFailedTests: true
+
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      condition: always()
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '$(Build.SourcesDirectory)/coverage.xml'
+
+    - task: AzureCLI@2
+      displayName: 'Run RAG Evaluation'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Run evaluation
+          python eval/run_eval_ci.py \
+            --eval-set eval/eval_set.jsonl \
+            --output eval/results.json \
+            --baseline eval/baseline_summary.json
+
+          # Extract and validate metrics
+          OVERALL=$(python -c "import json; print(json.load(open('eval/results.json'))['overall_avg'])")
+          PASS_RATE=$(python -c "import json; print(json.load(open('eval/results.json'))['pass_rate'])")
+
+          echo "##vso[task.setvariable variable=evalOverall;isOutput=true]$OVERALL"
+          echo "##vso[task.setvariable variable=evalPassRate;isOutput=true]$PASS_RATE"
+
+          # Check pass rate threshold
+          if (( $(echo "$PASS_RATE < $(evalPassThreshold)" | bc -l) )); then
+            echo "##vso[task.logissue type=error]Evaluation pass rate ($PASS_RATE) below threshold ($(evalPassThreshold))"
+            exit 1
+          fi
+
+          echo "Evaluation passed with overall score: $OVERALL"
+      name: evalStep
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish evaluation results'
+      inputs:
+        targetPath: 'eval/results.json'
+        artifact: 'evalmetrics'
+
+    - script: |
+        python -c "import json; print(json.load(open('eval/results.json'))['overall_avg'])" > eval/overall.txt
+      displayName: 'Extract overall score'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish overall score'
+      inputs:
+        targetPath: 'eval/overall.txt'
+        artifact: 'evalscore'
+
+    - script: |
+        cd azure-function-rag
+        zip -r ../function.zip . -x "*.pyc" -x "__pycache__/*" -x ".git/*" -x "*.md"
+      displayName: 'Package Function App'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish function package'
+      inputs:
+        targetPath: 'function.zip'
+        artifact: '$(artifactName)'
+
+# ============================================================================
+# STAGE 2: DEPLOY TO STAGING
+# ============================================================================
+- stage: Deploy_Staging
+  displayName: 'Deploy to Staging'
+  dependsOn: Build_Test_Eval
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+    baselineScore: $[ stageDependencies.Build_Test_Eval.BuildTestEval.outputs['evalStep.evalOverall'] ]
+
+  jobs:
+  - deployment: DeployStaging
+    displayName: 'Deploy to Staging Slot'
+    environment: 'rag-staging'
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: '$(artifactName)'
+            displayName: 'Download function package'
+
+          - task: AzureFunctionApp@2
+            displayName: 'Deploy to staging slot'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              appType: 'functionAppLinux'
+              appName: '$(FUNCTIONAPP_NAME)'
+              deployToSlotOrASE: true
+              resourceGroupName: '$(AZURE_RG)'
+              slotName: '$(stagingSlot)'
+              package: '$(Pipeline.Workspace)/$(artifactName)/function.zip'
+              runtimeStack: 'PYTHON|3.10'
+
+          - script: |
+              echo "Waiting for deployment to stabilize..."
+              sleep 30
+            displayName: 'Wait for deployment'
+
+          - script: |
+              response=$(curl -s -o /dev/null -w "%{http_code}" "$(STAGING_URL)/api/health")
+              if [ "$response" != "200" ]; then
+                echo "##vso[task.logissue type=error]Smoke test failed with status $response"
+                exit 1
+              fi
+              echo "Smoke test passed"
+            displayName: 'Smoke test staging'
+
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install -r eval/requirements.txt
+            displayName: 'Install eval dependencies'
+
+          - task: AzureCLI@2
+            displayName: 'Run evaluation against staging'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                python eval/run_eval_ci.py \
+                  --eval-set eval/eval_set.jsonl \
+                  --output eval/staging_results.json \
+                  --endpoint "$(STAGING_URL)/api/chat"
+
+                OVERALL=$(python -c "import json; print(json.load(open('eval/staging_results.json'))['overall_avg'])")
+                echo "##vso[task.setvariable variable=stagingScore;isOutput=true]$OVERALL"
+                echo "Staging evaluation score: $OVERALL"
+            name: stagingEval
+
+          - script: |
+              python -c "import json; print(json.load(open('eval/staging_results.json'))['overall_avg'])" > eval/staging_overall.txt
+            displayName: 'Extract staging score'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish staging metrics'
+            inputs:
+              targetPath: 'eval/staging_overall.txt'
+              artifact: 'stagingmetrics'
+
+# ============================================================================
+# STAGE 3: PROMOTE TO PRODUCTION
+# ============================================================================
+- stage: Promote_Production
+  displayName: 'Promote to Production'
+  dependsOn:
+    - Build_Test_Eval
+    - Deploy_Staging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+  - deployment: PromoteProduction
+    displayName: 'Swap to Production'
+    environment: 'rag-production'
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: 'evalscore'
+            displayName: 'Download baseline score'
+
+          - download: current
+            artifact: 'stagingmetrics'
+            displayName: 'Download staging score'
+
+          - script: |
+              BASE=$(cat $(Pipeline.Workspace)/evalscore/overall.txt)
+              STAGING=$(cat $(Pipeline.Workspace)/stagingmetrics/staging_overall.txt)
+
+              echo "Baseline score: $BASE"
+              echo "Staging score: $STAGING"
+
+              # Calculate regression
+              DROP=$(python -c "b=$BASE; s=$STAGING; print((b-s)/b if b > 0 else 0)")
+              echo "Score change: $DROP"
+
+              if (( $(echo "$DROP > $(evalDropThreshold)" | bc -l) )); then
+                echo "##vso[task.logissue type=error]Staging score regressed by more than $(evalDropThreshold)"
+                exit 1
+              fi
+
+              echo "Evaluation gate passed - proceeding with swap"
+            displayName: 'Compare evaluation scores'
+
+          - task: AzureCLI@2
+            displayName: 'Swap staging to production'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az functionapp deployment slot swap \
+                  --name $(FUNCTIONAPP_NAME) \
+                  --resource-group $(AZURE_RG) \
+                  --slot $(stagingSlot) \
+                  --target-slot production
+
+                echo "Successfully swapped staging to production"
+
+          - script: |
+              PROD_URL="https://$(FUNCTIONAPP_NAME).azurewebsites.net"
+              for i in {1..5}; do
+                response=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/api/health")
+                if [ "$response" == "200" ]; then
+                  echo "Production health check passed"
+                  exit 0
+                fi
+                echo "Health check attempt $i failed, retrying..."
+                sleep 10
+              done
+              echo "##vso[task.logissue type=error]Production health check failed"
+              exit 1
+            displayName: 'Verify production health'
+
+        on:
+          failure:
+            steps:
+            - task: AzureCLI@2
+              displayName: 'Rollback - Swap back'
+              inputs:
+                azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  echo "##vso[task.logissue type=warning]Initiating rollback"
+                  az functionapp deployment slot swap \
+                    --name $(FUNCTIONAPP_NAME) \
+                    --resource-group $(AZURE_RG) \
+                    --slot $(stagingSlot) \
+                    --target-slot production
+                  echo "Rollback completed"
+
+# ============================================================================
+# STAGE 4: FOUNDRY CLOUD EVALUATION (Optional)
+# ============================================================================
+- stage: Foundry_Cloud_Eval
+  displayName: 'Azure AI Foundry Cloud Evaluation'
+  dependsOn: Promote_Production
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+  - job: CloudEval
+    displayName: 'Run Foundry Cloud Evaluation'
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python'
+      inputs:
+        versionSpec: '$(pythonVersion)'
+
+    - script: |
+        pip install azure-ai-evaluation azure-ai-projects azure-identity
+      displayName: 'Install Foundry SDK'
+
+    - task: AzureCLI@2
+      displayName: 'Run cloud evaluation'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          python eval/run_cloud_eval.py
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish cloud eval results'
+      condition: always()
+      inputs:
+        targetPath: 'eval/cloud_summary.json'
+        artifact: 'foundry-eval'

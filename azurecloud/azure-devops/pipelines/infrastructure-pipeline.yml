@@ -1,0 +1,244 @@
+# Azure DevOps Pipeline for Infrastructure Deployment
+# Deploys Azure resources using Terraform
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - infrastructure/terraform/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infrastructure/terraform/**
+
+variables:
+  - group: genai-copilot-vars  # Variable group with secrets
+  - name: terraformVersion
+    value: '1.5.7'
+  - name: workingDirectory
+    value: 'infrastructure/terraform'
+
+stages:
+  # Validation Stage
+  - stage: Validate
+    displayName: 'Validate Terraform'
+    jobs:
+      - job: Validate
+        displayName: 'Terraform Validate'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Init'
+            inputs:
+              command: 'init'
+              workingDirectory: $(workingDirectory)
+              backendType: 'azurerm'
+              backendServiceArm: 'Azure-Service-Connection'
+              backendAzureRmResourceGroupName: $(TF_STATE_RG)
+              backendAzureRmStorageAccountName: $(TF_STATE_STORAGE)
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'genai-copilot-$(Build.SourceBranchName).tfstate'
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Validate'
+            inputs:
+              command: 'validate'
+              workingDirectory: $(workingDirectory)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Format Check'
+            inputs:
+              command: 'fmt'
+              workingDirectory: $(workingDirectory)
+              commandOptions: '-check -recursive'
+
+  # Plan Stage - Dev
+  - stage: PlanDev
+    displayName: 'Plan Dev Environment'
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - job: Plan
+        displayName: 'Terraform Plan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Init'
+            inputs:
+              command: 'init'
+              workingDirectory: $(workingDirectory)
+              backendType: 'azurerm'
+              backendServiceArm: 'Azure-Service-Connection'
+              backendAzureRmResourceGroupName: $(TF_STATE_RG)
+              backendAzureRmStorageAccountName: $(TF_STATE_STORAGE)
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'genai-copilot-dev.tfstate'
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Plan'
+            inputs:
+              command: 'plan'
+              workingDirectory: $(workingDirectory)
+              environmentServiceName: 'Azure-Service-Connection'
+              commandOptions: '-var-file=environments/dev/terraform.tfvars -var="vm_admin_password=$(VM_ADMIN_PASSWORD)" -out=tfplan'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Plan'
+            inputs:
+              targetPath: '$(workingDirectory)/tfplan'
+              artifact: 'terraform-plan-dev'
+
+  # Apply Stage - Dev
+  - stage: ApplyDev
+    displayName: 'Apply Dev Environment'
+    dependsOn: PlanDev
+    condition: succeeded()
+    jobs:
+      - deployment: Deploy
+        displayName: 'Deploy Infrastructure'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: 'terraform-plan-dev'
+                    path: $(workingDirectory)
+
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Init'
+                  inputs:
+                    command: 'init'
+                    workingDirectory: $(workingDirectory)
+                    backendType: 'azurerm'
+                    backendServiceArm: 'Azure-Service-Connection'
+                    backendAzureRmResourceGroupName: $(TF_STATE_RG)
+                    backendAzureRmStorageAccountName: $(TF_STATE_STORAGE)
+                    backendAzureRmContainerName: 'tfstate'
+                    backendAzureRmKey: 'genai-copilot-dev.tfstate'
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    command: 'apply'
+                    workingDirectory: $(workingDirectory)
+                    environmentServiceName: 'Azure-Service-Connection'
+                    commandOptions: 'tfplan'
+
+  # Plan Stage - Prod
+  - stage: PlanProd
+    displayName: 'Plan Prod Environment'
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: Plan
+        displayName: 'Terraform Plan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Init'
+            inputs:
+              command: 'init'
+              workingDirectory: $(workingDirectory)
+              backendType: 'azurerm'
+              backendServiceArm: 'Azure-Service-Connection'
+              backendAzureRmResourceGroupName: $(TF_STATE_RG)
+              backendAzureRmStorageAccountName: $(TF_STATE_STORAGE)
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'genai-copilot-prod.tfstate'
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Plan'
+            inputs:
+              command: 'plan'
+              workingDirectory: $(workingDirectory)
+              environmentServiceName: 'Azure-Service-Connection'
+              commandOptions: '-var-file=environments/prod/terraform.tfvars -var="vm_admin_password=$(VM_ADMIN_PASSWORD)" -out=tfplan'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Plan'
+            inputs:
+              targetPath: '$(workingDirectory)/tfplan'
+              artifact: 'terraform-plan-prod'
+
+  # Apply Stage - Prod (with approval)
+  - stage: ApplyProd
+    displayName: 'Apply Prod Environment'
+    dependsOn: PlanProd
+    condition: succeeded()
+    jobs:
+      - deployment: Deploy
+        displayName: 'Deploy Infrastructure'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'prod'  # Requires approval in Azure DevOps
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: 'terraform-plan-prod'
+                    path: $(workingDirectory)
+
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Init'
+                  inputs:
+                    command: 'init'
+                    workingDirectory: $(workingDirectory)
+                    backendType: 'azurerm'
+                    backendServiceArm: 'Azure-Service-Connection'
+                    backendAzureRmResourceGroupName: $(TF_STATE_RG)
+                    backendAzureRmStorageAccountName: $(TF_STATE_STORAGE)
+                    backendAzureRmContainerName: 'tfstate'
+                    backendAzureRmKey: 'genai-copilot-prod.tfstate'
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    command: 'apply'
+                    workingDirectory: $(workingDirectory)
+                    environmentServiceName: 'Azure-Service-Connection'
+                    commandOptions: 'tfplan'

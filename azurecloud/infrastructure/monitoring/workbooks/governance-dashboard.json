@@ -1,0 +1,528 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Executive Governance Dashboard\n## Enterprise RAG Platform - Phase 10\n\nReal-time visibility into policy compliance, audit findings, model lifecycle, and platform health."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "time-range",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000, "displayName": "Last hour" },
+                { "durationMs": 86400000, "displayName": "Last 24 hours" },
+                { "durationMs": 604800000, "displayName": "Last 7 days" },
+                { "durationMs": 2592000000, "displayName": "Last 30 days" }
+              ]
+            }
+          },
+          {
+            "id": "tenant-filter",
+            "version": "KqlParameterItem/1.0",
+            "name": "TenantId",
+            "type": 2,
+            "isRequired": false,
+            "query": "customEvents | where name == 'PolicyEvaluation' | distinct tostring(customDimensions.tenant_id) | order by Column1 asc",
+            "value": null,
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"]
+            }
+          }
+        ]
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "tabs",
+        "links": [
+          { "id": "tab-overview", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Overview", "subTarget": "Overview" },
+          { "id": "tab-compliance", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Policy Compliance", "subTarget": "Compliance" },
+          { "id": "tab-audit", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Audit Findings", "subTarget": "Audit" },
+          { "id": "tab-models", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Model Lifecycle", "subTarget": "Models" },
+          { "id": "tab-agents", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Multi-Agent", "subTarget": "Agents" },
+          { "id": "tab-kos", "cellValue": "Tab", "linkTarget": "parameter", "linkLabel": "Knowledge OS", "subTarget": "KOS" }
+        ]
+      },
+      "name": "tabs"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Platform Health Score"
+            },
+            "name": "health-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "let TimeWindow = {TimeRange:start};\nlet PolicyScore = toscalar(customEvents | where timestamp > TimeWindow | where name == 'PolicyEvaluation' | summarize Score = countif(tostring(customDimensions.action) in ('allow', 'warn')) * 100.0 / count());\nlet AuditScore = toscalar(customEvents | where timestamp > TimeWindow | where name == 'AuditFinding' | summarize Score = 100.0 - (countif(tostring(customDimensions.severity) == 'critical') * 20) - (countif(tostring(customDimensions.severity) == 'high') * 10));\nlet LatencyScore = toscalar(customEvents | where timestamp > TimeWindow | where name == 'RAGQuery' | summarize Score = countif(todouble(customDimensions.latency_ms) < 3000) * 100.0 / count());\nprint OverallHealth = round((coalesce(PolicyScore, 100) + coalesce(AuditScore, 100) + coalesce(LatencyScore, 100)) / 3, 1)",
+              "size": 1,
+              "title": "Overall Health Score",
+              "queryType": 0,
+              "visualization": "tiles",
+              "tileSettings": {
+                "titleContent": { "columnMatch": "OverallHealth", "formatter": 12 },
+                "showBorder": true
+              }
+            },
+            "name": "health-score"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PolicyViolation'\n| extend severity = tostring(customDimensions.severity)\n| summarize Count = count() by severity\n| order by case(severity, 'critical', 1, 'high', 2, 'medium', 3, 'low', 4, 5) asc",
+              "size": 1,
+              "title": "Policy Violations by Severity",
+              "queryType": 0,
+              "visualization": "piechart"
+            },
+            "customWidth": "50",
+            "name": "violations-pie"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'AuditFinding'\n| extend status = tostring(customDimensions.status)\n| summarize Count = count() by status",
+              "size": 1,
+              "title": "Audit Finding Status",
+              "queryType": 0,
+              "visualization": "piechart"
+            },
+            "customWidth": "50",
+            "name": "audit-status-pie"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PolicyViolation'\n| extend severity = tostring(customDimensions.severity)\n| summarize Count = count() by bin(timestamp, 1h), severity\n| render timechart",
+              "size": 0,
+              "title": "Policy Violations Trend",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "violations-trend"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "Overview"
+      },
+      "name": "overview-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Policy Compliance"
+            },
+            "name": "compliance-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PolicyEvaluation'\n| extend tenant_id = tostring(customDimensions.tenant_id)\n| extend action = tostring(customDimensions.action)\n| extend compliant = action in ('allow', 'warn')\n| summarize Total = count(), Compliant = countif(compliant), Denied = countif(action == 'deny') by tenant_id\n| extend ComplianceScore = round(todouble(Compliant) / Total * 100, 2)\n| project tenant_id, ComplianceScore, Total, Denied\n| order by ComplianceScore asc",
+              "size": 0,
+              "title": "Compliance Score by Tenant",
+              "queryType": 0,
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  { "columnMatch": "ComplianceScore", "formatter": 8, "formatOptions": { "min": 0, "max": 100, "palette": "redGreen" } }
+                ]
+              }
+            },
+            "name": "compliance-by-tenant"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PolicyViolation'\n| extend policy_name = tostring(customDimensions.policy_name)\n| summarize ViolationCount = count() by policy_name\n| top 10 by ViolationCount desc",
+              "size": 0,
+              "title": "Top 10 Most Violated Policies",
+              "queryType": 0,
+              "visualization": "barchart"
+            },
+            "name": "top-violations"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PolicyEnforcement'\n| extend action = tostring(customDimensions.action)\n| extend policy_type = tostring(customDimensions.policy_type)\n| summarize Count = count() by action, policy_type",
+              "size": 0,
+              "title": "Enforcement Actions",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "enforcement-actions"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "Compliance"
+      },
+      "name": "compliance-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Audit Findings"
+            },
+            "name": "audit-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'AuditFinding'\n| extend severity = tostring(customDimensions.severity)\n| extend status = tostring(customDimensions.status)\n| extend check_type = tostring(customDimensions.check_type)\n| summarize Count = count(), Open = countif(status == 'open'), Resolved = countif(status == 'resolved') by severity\n| extend OpenRate = round(todouble(Open) / Count * 100, 2)\n| order by case(severity, 'critical', 1, 'high', 2, 'medium', 3, 'low', 4, 5) asc",
+              "size": 0,
+              "title": "Findings by Severity",
+              "queryType": 0,
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  { "columnMatch": "severity", "formatter": 18, "formatOptions": { "thresholdsOptions": "colors", "thresholdsGrid": [
+                    { "operator": "==", "thresholdValue": "critical", "representation": "redBright" },
+                    { "operator": "==", "thresholdValue": "high", "representation": "orange" },
+                    { "operator": "==", "thresholdValue": "medium", "representation": "yellow" },
+                    { "operator": "default", "representation": "green" }
+                  ]}}
+                ]
+              }
+            },
+            "customWidth": "50",
+            "name": "findings-by-severity"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'AuditFinding'\n| extend check_type = tostring(customDimensions.check_type)\n| summarize Count = count() by check_type",
+              "size": 0,
+              "title": "Findings by Check Type",
+              "queryType": 0,
+              "visualization": "piechart"
+            },
+            "customWidth": "50",
+            "name": "findings-by-type"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'GroundingCheck'\n| extend grounding_score = todouble(customDimensions.grounding_score)\n| where grounding_score < 0.7\n| summarize LowGroundingCount = count(), AvgScore = avg(grounding_score) by bin(timestamp, 1h)\n| render timechart",
+              "size": 0,
+              "title": "Low Grounding Score Events (Potential Hallucinations)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "grounding-trend"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'PIIDetection'\n| extend pii_type = tostring(customDimensions.pii_type)\n| summarize Count = count() by pii_type",
+              "size": 0,
+              "title": "PII Detection Events",
+              "queryType": 0,
+              "visualization": "barchart"
+            },
+            "customWidth": "50",
+            "name": "pii-detection"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'CrossTenantAlert'\n| extend tenant_id = tostring(customDimensions.requesting_tenant)\n| extend foreign_tenant = tostring(customDimensions.foreign_tenant)\n| project timestamp, tenant_id, foreign_tenant\n| order by timestamp desc\n| take 20",
+              "size": 0,
+              "title": "Cross-Tenant Contamination Alerts",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "cross-tenant-alerts"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "Audit"
+      },
+      "name": "audit-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Model Lifecycle Management"
+            },
+            "name": "models-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > ago(1h)\n| where name == 'ModelDeploymentStatus'\n| extend model_id = tostring(customDimensions.model_id)\n| extend version = tostring(customDimensions.version)\n| extend stage = tostring(customDimensions.stage)\n| extend traffic_pct = todouble(customDimensions.traffic_percentage)\n| summarize arg_max(timestamp, *) by model_id\n| project model_id, version, stage, traffic_pct, timestamp",
+              "size": 0,
+              "title": "Active Model Deployments",
+              "queryType": 0,
+              "visualization": "table",
+              "gridSettings": {
+                "formatters": [
+                  { "columnMatch": "stage", "formatter": 18, "formatOptions": { "thresholdsOptions": "colors", "thresholdsGrid": [
+                    { "operator": "==", "thresholdValue": "production", "representation": "green" },
+                    { "operator": "==", "thresholdValue": "canary", "representation": "yellow" },
+                    { "operator": "==", "thresholdValue": "shadow", "representation": "blue" },
+                    { "operator": "default", "representation": "gray" }
+                  ]}}
+                ]
+              }
+            },
+            "name": "model-deployments"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'CanaryHealthCheck'\n| extend deployment_id = tostring(customDimensions.deployment_id)\n| extend error_rate = todouble(customDimensions.error_rate)\n| extend latency_p99 = todouble(customDimensions.latency_p99_ms)\n| summarize AvgErrorRate = avg(error_rate), AvgLatency = avg(latency_p99) by bin(timestamp, 15m), deployment_id\n| render timechart",
+              "size": 0,
+              "title": "Canary Deployment Health",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "canary-health"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'ModelEvaluation'\n| extend status = tostring(customDimensions.status)\n| summarize Evaluations = count(), Passed = countif(status == 'passed'), Failed = countif(status == 'failed') by bin(timestamp, 1d)\n| extend PassRate = round(todouble(Passed) / Evaluations * 100, 2)\n| render timechart",
+              "size": 0,
+              "title": "Model Evaluation Results",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "model-evaluations"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'ModelRollback'\n| extend model_id = tostring(customDimensions.model_id)\n| extend version = tostring(customDimensions.version)\n| extend reason = tostring(customDimensions.reason)\n| project timestamp, model_id, version, reason\n| order by timestamp desc",
+              "size": 0,
+              "title": "Recent Model Rollbacks",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "model-rollbacks"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "Models"
+      },
+      "name": "models-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Multi-Agent Orchestration"
+            },
+            "name": "agents-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'AgentTaskCompleted'\n| extend agent_type = tostring(customDimensions.agent_type)\n| extend duration_ms = todouble(customDimensions.duration_ms)\n| summarize Tasks = count(), AvgDuration = avg(duration_ms), P95Duration = percentile(duration_ms, 95) by agent_type",
+              "size": 0,
+              "title": "Agent Task Distribution",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "agent-tasks"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'AgentError'\n| extend agent_type = tostring(customDimensions.agent_type)\n| extend error_type = tostring(customDimensions.error_type)\n| summarize Errors = count() by agent_type, error_type\n| order by Errors desc",
+              "size": 0,
+              "title": "Agent Errors",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "agent-errors"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'WorkflowCompleted'\n| extend success = tobool(customDimensions.success)\n| extend duration_ms = todouble(customDimensions.total_duration_ms)\n| summarize Workflows = count(), Successful = countif(success), AvgDuration = avg(duration_ms) by bin(timestamp, 1h)\n| extend SuccessRate = round(todouble(Successful) / Workflows * 100, 2)\n| render timechart",
+              "size": 0,
+              "title": "Workflow Execution Trend",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "workflow-trend"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'ApprovalRequest'\n| extend approval_type = tostring(customDimensions.approval_type)\n| extend status = tostring(customDimensions.status)\n| extend wait_minutes = todouble(customDimensions.wait_time_minutes)\n| summarize Requests = count(), Approved = countif(status == 'approved'), Rejected = countif(status == 'rejected'), Pending = countif(status == 'pending'), AvgWait = avg(wait_minutes) by approval_type",
+              "size": 0,
+              "title": "Human-in-the-Loop Approvals",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "hitl-approvals"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "Agents"
+      },
+      "name": "agents-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 1,
+            "content": {
+              "json": "## Knowledge Operating System"
+            },
+            "name": "kos-header"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'KnowledgeIngested'\n| extend knowledge_type = tostring(customDimensions.knowledge_type)\n| summarize Count = count() by bin(timestamp, 1h), knowledge_type\n| render timechart",
+              "size": 0,
+              "title": "Knowledge Ingestion Rate",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "knowledge-ingestion"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'KnowledgeQuery'\n| extend latency_ms = todouble(customDimensions.latency_ms)\n| extend cache_hit = tobool(customDimensions.cache_hit)\n| summarize Queries = count(), AvgLatency = avg(latency_ms), P95Latency = percentile(latency_ms, 95), CacheHitRate = round(countif(cache_hit) * 100.0 / count(), 2) by bin(timestamp, 1h)\n| render timechart",
+              "size": 0,
+              "title": "Query Performance",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "query-performance"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > ago(1h)\n| where name == 'KnowledgeGraphStats'\n| extend tenant_id = tostring(customDimensions.tenant_id)\n| extend nodes = toint(customDimensions.node_count)\n| extend edges = toint(customDimensions.edge_count)\n| extend entities = toint(customDimensions.entity_count)\n| summarize arg_max(timestamp, *) by tenant_id\n| project tenant_id, nodes, edges, entities",
+              "size": 0,
+              "title": "Knowledge Graph Statistics",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "kg-stats"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "customEvents\n| where timestamp > {TimeRange:start}\n| where name == 'MultiHopReasoning'\n| extend depth = toint(customDimensions.reasoning_depth)\n| extend items = toint(customDimensions.items_used)\n| extend confidence = todouble(customDimensions.confidence)\n| summarize Count = count(), AvgDepth = avg(depth), AvgItems = avg(items), AvgConfidence = avg(confidence) by bin(timestamp, 1d)",
+              "size": 0,
+              "title": "Multi-Hop Reasoning Usage",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "customWidth": "50",
+            "name": "reasoning-usage"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "Tab",
+        "comparison": "isEqualTo",
+        "value": "KOS"
+      },
+      "name": "kos-group"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

@@ -1,0 +1,373 @@
+name: Deploy RAG Backend with Evaluation Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: "3.10"
+  AZURE_FUNCTIONAPP_NAME: ${{ vars.FUNCTIONAPP_NAME }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RG }}
+  EVAL_DROP_THRESHOLD: "0.10"
+  EVAL_PASS_THRESHOLD: "0.70"
+
+jobs:
+  # ============================================
+  # JOB 1: Build, Test, and Evaluate
+  # ============================================
+  build-test-eval:
+    name: Build, Test & Evaluate
+    runs-on: ubuntu-latest
+    outputs:
+      overall_avg: ${{ steps.eval.outputs.overall_avg }}
+      groundedness_avg: ${{ steps.eval.outputs.groundedness_avg }}
+      relevance_avg: ${{ steps.eval.outputs.relevance_avg }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r azure-function-rag/requirements.txt
+          pip install -r eval/requirements.txt
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Run unit tests
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml --junitxml=test-results.xml
+        continue-on-error: false
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run RAG Evaluation
+        id: eval
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_DEPLOYMENT: ${{ vars.AZURE_OPENAI_CHAT_DEPLOYMENT }}
+          AZURE_OPENAI_EMB_DEPLOYMENT: ${{ vars.AZURE_OPENAI_EMB_DEPLOYMENT }}
+        run: |
+          python eval/run_eval_ci.py \
+            --eval-set eval/eval_set.jsonl \
+            --output eval/results.json \
+            --baseline eval/baseline_summary.json
+
+          # Extract metrics for outputs
+          OVERALL=$(python -c "import json; print(json.load(open('eval/results.json'))['overall_avg'])")
+          GROUNDEDNESS=$(python -c "import json; print(json.load(open('eval/results.json'))['groundedness_avg'])")
+          RELEVANCE=$(python -c "import json; print(json.load(open('eval/results.json'))['relevance_avg'])")
+          PASS_RATE=$(python -c "import json; print(json.load(open('eval/results.json'))['pass_rate'])")
+
+          echo "overall_avg=$OVERALL" >> $GITHUB_OUTPUT
+          echo "groundedness_avg=$GROUNDEDNESS" >> $GITHUB_OUTPUT
+          echo "relevance_avg=$RELEVANCE" >> $GITHUB_OUTPUT
+
+          # Check pass rate
+          if (( $(echo "$PASS_RATE < ${{ env.EVAL_PASS_THRESHOLD }}" | bc -l) )); then
+            echo "::error::Evaluation pass rate ($PASS_RATE) below threshold (${{ env.EVAL_PASS_THRESHOLD }})"
+            exit 1
+          fi
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval/results.json
+
+      - name: Comment PR with evaluation results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('eval/results.json', 'utf8'));
+
+            const body = `## RAG Evaluation Results
+
+            | Metric | Score |
+            |--------|-------|
+            | Overall | ${results.overall_avg.toFixed(4)} |
+            | Groundedness | ${results.groundedness_avg.toFixed(4)} |
+            | Relevance | ${results.relevance_avg.toFixed(4)} |
+            | Citation Accuracy | ${results.citation_accuracy_avg.toFixed(4)} |
+            | Table Understanding | ${results.table_understanding_avg.toFixed(4)} |
+            | Pass Rate | ${(results.pass_rate * 100).toFixed(1)}% |
+
+            **Samples Evaluated:** ${results.total_samples}
+            **Run ID:** ${results.run_id}
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Package Function App
+        run: |
+          cd azure-function-rag
+          zip -r ../function.zip . -x "*.pyc" -x "__pycache__/*" -x ".git/*"
+
+      - name: Upload function package
+        uses: actions/upload-artifact@v4
+        with:
+          name: function-package
+          path: function.zip
+
+  # ============================================
+  # JOB 2: Deploy to Staging
+  # ============================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-test-eval
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.webapp-url }}
+
+    outputs:
+      staging_overall: ${{ steps.staging-eval.outputs.overall_avg }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download function package
+        uses: actions/download-artifact@v4
+        with:
+          name: function-package
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to staging slot
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          slot-name: staging
+          package: function.zip
+
+      - name: Wait for deployment to stabilize
+        run: sleep 30
+
+      - name: Smoke test staging
+        run: |
+          STAGING_URL="https://${{ env.AZURE_FUNCTIONAPP_NAME }}-staging.azurewebsites.net"
+
+          # Health check
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/api/health")
+          if [ "$response" != "200" ]; then
+            echo "::error::Health check failed with status $response"
+            exit 1
+          fi
+
+          echo "Smoke test passed"
+
+      - name: Setup Python for staging eval
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install eval dependencies
+        run: pip install -r eval/requirements.txt
+
+      - name: Run evaluation against staging
+        id: staging-eval
+        env:
+          RAG_ENDPOINT: https://${{ env.AZURE_FUNCTIONAPP_NAME }}-staging.azurewebsites.net
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+        run: |
+          python eval/run_eval_ci.py \
+            --eval-set eval/eval_set.jsonl \
+            --output eval/staging_results.json \
+            --endpoint "$RAG_ENDPOINT/api/chat"
+
+          OVERALL=$(python -c "import json; print(json.load(open('eval/staging_results.json'))['overall_avg'])")
+          echo "overall_avg=$OVERALL" >> $GITHUB_OUTPUT
+
+      - name: Upload staging eval results
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-eval-results
+          path: eval/staging_results.json
+
+  # ============================================
+  # JOB 3: Promote to Production (Blue/Green Swap)
+  # ============================================
+  promote-production:
+    name: Promote to Production
+    needs: [build-test-eval, deploy-staging]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://${{ env.AZURE_FUNCTIONAPP_NAME }}.azurewebsites.net
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download eval results
+        uses: actions/download-artifact@v4
+        with:
+          name: eval-results
+          path: eval/
+
+      - name: Download staging eval results
+        uses: actions/download-artifact@v4
+        with:
+          name: staging-eval-results
+          path: eval/
+
+      - name: Compare evaluation scores
+        id: compare
+        run: |
+          BASE="${{ needs.build-test-eval.outputs.overall_avg }}"
+          STAGING="${{ needs.deploy-staging.outputs.staging_overall }}"
+          THRESHOLD="${{ env.EVAL_DROP_THRESHOLD }}"
+
+          echo "Baseline score: $BASE"
+          echo "Staging score: $STAGING"
+
+          # Calculate drop percentage
+          DROP=$(python -c "print(($BASE - $STAGING) / $BASE if $BASE > 0 else 0)")
+          echo "Score change: $DROP"
+
+          if (( $(echo "$DROP > $THRESHOLD" | bc -l) )); then
+            echo "::error::Staging score dropped by more than ${THRESHOLD}%"
+            echo "regression=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "regression=false" >> $GITHUB_OUTPUT
+          echo "Evaluation gate passed"
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Swap staging to production
+        run: |
+          az functionapp deployment slot swap \
+            --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+
+          echo "Successfully swapped staging to production"
+
+      - name: Verify production health
+        run: |
+          PROD_URL="https://${{ env.AZURE_FUNCTIONAPP_NAME }}.azurewebsites.net"
+
+          for i in {1..5}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/api/health")
+            if [ "$response" == "200" ]; then
+              echo "Production health check passed"
+              exit 0
+            fi
+            echo "Health check attempt $i failed, retrying..."
+            sleep 10
+          done
+
+          echo "::error::Production health check failed"
+          exit 1
+
+      - name: Update baseline on success
+        if: success()
+        run: |
+          # Copy staging results as new baseline
+          cp eval/staging_results.json eval/baseline_summary.json
+
+          # Note: In production, commit this back to the repo
+          echo "Baseline updated with new scores"
+
+  # ============================================
+  # JOB 4: Rollback on Failure
+  # ============================================
+  rollback:
+    name: Rollback on Failure
+    needs: [deploy-staging, promote-production]
+    runs-on: ubuntu-latest
+    if: failure() && needs.promote-production.result == 'failure'
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Rollback - Swap back
+        run: |
+          echo "::warning::Initiating rollback due to promotion failure"
+
+          az functionapp deployment slot swap \
+            --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+
+          echo "Rollback completed - previous production version restored"
+
+      - name: Create rollback issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deployment Rollback - ${new Date().toISOString()}`,
+              body: `## Automatic Rollback Triggered
+
+              **Workflow Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+              **Branch:** ${context.ref}
+              **Commit:** ${context.sha}
+
+              The deployment was automatically rolled back due to:
+              - Evaluation score regression beyond threshold
+              - Health check failure
+
+              Please investigate and fix before re-deploying.
+              `,
+              labels: ['deployment', 'rollback', 'urgent']
+            });

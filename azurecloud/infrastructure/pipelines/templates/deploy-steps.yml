@@ -1,0 +1,127 @@
+#===============================================================================
+# Deployment Steps Template
+# Reusable deployment steps for Azure AI/ML Platform
+#===============================================================================
+
+parameters:
+  - name: environment
+    type: string
+  - name: azureSubscription
+    type: string
+
+steps:
+  - download: CI
+    artifact: drop
+    displayName: 'Download build artifact'
+
+  - task: AzureCLI@2
+    displayName: 'Validate Azure Connection'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Connected to subscription: $(az account show --query name -o tsv)"
+        echo "Environment: ${{ parameters.environment }}"
+
+  #-----------------------------------------------------------------------------
+  # Deploy Function App
+  #-----------------------------------------------------------------------------
+  - task: AzureFunctionApp@2
+    displayName: 'Deploy Azure Function'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      appType: 'functionAppLinux'
+      appName: '$(PROJECT_NAME)-${{ parameters.environment }}-func'
+      package: '$(Pipeline.Workspace)/CI/drop/*.zip'
+      runtimeStack: 'PYTHON|3.11'
+      deploymentMethod: 'auto'
+
+  #-----------------------------------------------------------------------------
+  # Update App Settings
+  #-----------------------------------------------------------------------------
+  - task: AzureCLI@2
+    displayName: 'Update App Settings'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        FUNC_APP="$(PROJECT_NAME)-${{ parameters.environment }}-func"
+        RG="$(AZURE_RESOURCE_GROUP)"
+
+        # Get Key Vault name
+        KV_NAME="$(PROJECT_NAME)-${{ parameters.environment }}-kv"
+
+        # Get OpenAI endpoint
+        OPENAI_NAME="$(PROJECT_NAME)-${{ parameters.environment }}-openai"
+        OPENAI_ENDPOINT=$(az cognitiveservices account show -g $RG -n $OPENAI_NAME --query properties.endpoint -o tsv 2>/dev/null || echo "")
+
+        # Get AI Search endpoint
+        SEARCH_NAME="$(PROJECT_NAME)-${{ parameters.environment }}-search"
+        SEARCH_ENDPOINT="https://${SEARCH_NAME}.search.windows.net"
+
+        # Get Cosmos DB endpoint
+        COSMOS_NAME="$(PROJECT_NAME)-${{ parameters.environment }}-cosmos"
+        COSMOS_ENDPOINT=$(az cosmosdb show -g $RG -n $COSMOS_NAME --query documentEndpoint -o tsv 2>/dev/null || echo "")
+
+        # Update Function App settings
+        az functionapp config appsettings set \
+          -g $RG \
+          -n $FUNC_APP \
+          --settings \
+            ENVIRONMENT="${{ parameters.environment }}" \
+            AZURE_OPENAI_ENDPOINT="$OPENAI_ENDPOINT" \
+            AZURE_SEARCH_ENDPOINT="$SEARCH_ENDPOINT" \
+            COSMOS_DB_ENDPOINT="$COSMOS_ENDPOINT" \
+            KEY_VAULT_URL="https://${KV_NAME}.vault.azure.net/" \
+          --output none
+
+        echo "App settings updated successfully"
+
+  #-----------------------------------------------------------------------------
+  # Health Check
+  #-----------------------------------------------------------------------------
+  - task: AzureCLI@2
+    displayName: 'Health Check'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        FUNC_APP="$(PROJECT_NAME)-${{ parameters.environment }}-func"
+        RG="$(AZURE_RESOURCE_GROUP)"
+
+        # Get function app URL
+        FUNC_URL=$(az functionapp show -g $RG -n $FUNC_APP --query defaultHostName -o tsv)
+
+        echo "Function App URL: https://$FUNC_URL"
+
+        # Wait for deployment to stabilize
+        sleep 30
+
+        # Check health endpoint
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://$FUNC_URL/api/health" || echo "000")
+
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "Health check passed (HTTP $HTTP_CODE)"
+        else
+          echo "Health check returned HTTP $HTTP_CODE"
+          echo "Checking function app status..."
+          az functionapp show -g $RG -n $FUNC_APP --query state -o tsv
+        fi
+
+  #-----------------------------------------------------------------------------
+  # Notify Deployment Status
+  #-----------------------------------------------------------------------------
+  - script: |
+      echo "##vso[task.setvariable variable=DEPLOYMENT_STATUS]SUCCESS"
+      echo "Deployment to ${{ parameters.environment }} completed successfully"
+    displayName: 'Mark deployment success'
+    condition: succeeded()
+
+  - script: |
+      echo "##vso[task.setvariable variable=DEPLOYMENT_STATUS]FAILED"
+      echo "Deployment to ${{ parameters.environment }} failed"
+    displayName: 'Mark deployment failure'
+    condition: failed()

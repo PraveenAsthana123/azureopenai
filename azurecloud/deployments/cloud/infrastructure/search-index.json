@@ -1,0 +1,171 @@
+{
+  "name": "rag-multimodal-index",
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "key": true,
+      "searchable": false,
+      "filterable": true,
+      "sortable": false,
+      "facetable": false
+    },
+    {
+      "name": "document_id",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "sortable": false,
+      "facetable": true
+    },
+    {
+      "name": "content_text",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "analyzer": "en.microsoft"
+    },
+    {
+      "name": "content_vector",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false,
+      "dimensions": 3072,
+      "vectorSearchProfile": "vector-profile"
+    },
+    {
+      "name": "title",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true,
+      "sortable": true,
+      "facetable": false
+    },
+    {
+      "name": "category",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "sortable": false,
+      "facetable": true
+    },
+    {
+      "name": "chunk_index",
+      "type": "Edm.Int32",
+      "searchable": false,
+      "filterable": true,
+      "sortable": true,
+      "facetable": false
+    },
+    {
+      "name": "char_start",
+      "type": "Edm.Int32",
+      "searchable": false,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false
+    },
+    {
+      "name": "char_end",
+      "type": "Edm.Int32",
+      "searchable": false,
+      "filterable": false,
+      "sortable": false,
+      "facetable": false
+    },
+    {
+      "name": "metadata",
+      "type": "Edm.ComplexType",
+      "fields": [
+        {
+          "name": "filename",
+          "type": "Edm.String",
+          "searchable": true,
+          "filterable": true
+        },
+        {
+          "name": "author",
+          "type": "Edm.String",
+          "searchable": true,
+          "filterable": true
+        },
+        {
+          "name": "source",
+          "type": "Edm.String",
+          "searchable": false,
+          "filterable": true
+        }
+      ]
+    },
+    {
+      "name": "created_at",
+      "type": "Edm.DateTimeOffset",
+      "searchable": false,
+      "filterable": true,
+      "sortable": true,
+      "facetable": false
+    }
+  ],
+  "vectorSearch": {
+    "algorithms": [
+      {
+        "name": "hnsw-algorithm",
+        "kind": "hnsw",
+        "hnswParameters": {
+          "m": 4,
+          "efConstruction": 400,
+          "efSearch": 500,
+          "metric": "cosine"
+        }
+      }
+    ],
+    "profiles": [
+      {
+        "name": "vector-profile",
+        "algorithm": "hnsw-algorithm"
+      }
+    ]
+  },
+  "semantic": {
+    "configurations": [
+      {
+        "name": "default",
+        "prioritizedFields": {
+          "titleField": {
+            "fieldName": "title"
+          },
+          "prioritizedContentFields": [
+            {
+              "fieldName": "content_text"
+            }
+          ],
+          "prioritizedKeywordsFields": [
+            {
+              "fieldName": "category"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "scoringProfiles": [
+    {
+      "name": "recency_boost",
+      "functions": [
+        {
+          "type": "freshness",
+          "fieldName": "created_at",
+          "boost": 2.0,
+          "interpolation": "linear",
+          "freshness": {
+            "boostingDuration": "P30D"
+          }
+        }
+      ]
+    }
+  ]
+}

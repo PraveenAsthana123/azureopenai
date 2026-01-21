@@ -1,0 +1,33 @@
+# Azure Functions Python Requirements
+# Cloud RAG Platform
+
+# Azure Functions Runtime
+azure-functions>=1.17.0
+
+# Azure Identity & Auth
+azure-identity>=1.15.0
+
+# Azure OpenAI
+openai>=1.12.0
+
+# Azure AI Search
+azure-search-documents>=11.4.0
+
+# Azure Cosmos DB
+azure-cosmos>=4.5.1
+
+# Azure Blob Storage
+azure-storage-blob>=12.19.0
+
+# Document Processing
+pypdf>=3.17.0
+python-docx>=1.1.0
+langchain-text-splitters>=0.0.1
+
+# Monitoring
+opencensus-ext-azure>=1.1.13
+applicationinsights>=0.11.10
+
+# Utilities
+pydantic>=2.5.0
+tenacity>=8.2.0

@@ -1,0 +1,10 @@
+{"id":"q1","question":"What is the key rotation interval?","ground_truth":"Keys must be rotated every 90 days.","requires_table":false}
+{"id":"q2","question":"Which teams are exempt from rotation?","ground_truth":"Only Emergency Response and Audit are exempt.","requires_table":false}
+{"id":"q3","question":"What is the max retention for logs?","ground_truth":"Logs are retained for 365 days.","requires_table":false}
+{"id":"q4","question":"List the onboarding steps in order.","ground_truth":"Verify ID, assign role, provision access, confirm training.","requires_table":false}
+{"id":"q5","question":"What is the Q3 budget for security tools?","ground_truth":"Q3 budget is $2.4M.","requires_table":true}
+{"id":"q6","question":"Compare Q2 vs Q3 spend.","ground_truth":"Q3 is higher by $0.3M.","requires_table":true}
+{"id":"q7","question":"What does Figure 3 describe?","ground_truth":"Figure 3 shows the data flow for incident escalation.","requires_table":false}
+{"id":"q8","question":"What is the SLA for critical incidents?","ground_truth":"Critical incidents must be acknowledged within 15 minutes.","requires_table":false}
+{"id":"q9","question":"Which region hosts the primary service?","ground_truth":"Primary service is hosted in Canada Central.","requires_table":false}
+{"id":"q10","question":"What are the allowed authentication methods?","ground_truth":"Only Entra ID OAuth2 with MFA is allowed.","requires_table":false}

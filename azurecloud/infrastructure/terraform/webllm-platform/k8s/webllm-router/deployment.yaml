@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webllm-router
+  labels:
+    app.kubernetes.io/name: webllm-router
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: router-config
+  namespace: webllm-router
+data:
+  config.yaml: |
+    routing:
+      # Routing strategy: round_robin, least_loaded, cost_optimized, privacy_first
+      default_strategy: cost_optimized
+
+      # Model routing rules
+      rules:
+        - name: privacy_sensitive
+          condition:
+            privacy_level: high
+          target: on_premise
+          models:
+            - llama-3-1-70b
+            - llama-3-1-8b
+
+        - name: code_generation
+          condition:
+            task_type: code
+          target: on_premise
+          models:
+            - codellama-34b
+
+        - name: complex_reasoning
+          condition:
+            complexity: high
+          target: cloud
+          models:
+            - gpt-4o
+            - gpt-4-turbo
+
+        - name: quick_response
+          condition:
+            latency_requirement: low
+          target: browser
+          models:
+            - llama-3-1-8b-webllm
+            - phi-3-mini-webllm
+
+    endpoints:
+      browser:
+        enabled: true
+        models:
+          - name: llama-3-1-8b-webllm
+            max_context: 4096
+          - name: phi-3-mini-webllm
+            max_context: 4096
+
+      on_premise:
+        enabled: true
+        url: http://mlc-llm-gateway.mlc-llm.svc.cluster.local
+        models:
+          - name: llama-3-1-70b
+            endpoint: /v1/chat/completions
+          - name: llama-3-1-8b
+            endpoint: /v1/chat/completions
+          - name: codellama-34b
+            endpoint: /v1/chat/completions
+
+      cloud:
+        enabled: true
+        provider: azure_openai
+        models:
+          - name: gpt-4o
+            deployment: gpt-4o
+          - name: gpt-4-turbo
+            deployment: gpt-4-turbo
+          - name: gpt-4-vision
+            deployment: gpt-4-vision
+
+    fallback:
+      enabled: true
+      order:
+        - on_premise
+        - cloud
+        - browser
+      retry_count: 3
+      timeout: 30s
+
+    rate_limiting:
+      enabled: true
+      requests_per_minute: 100
+      tokens_per_minute: 100000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webllm-router
+  namespace: webllm-router
+  labels:
+    app: webllm-router
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webllm-router
+  template:
+    metadata:
+      labels:
+        app: webllm-router
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      containers:
+        - name: router
+          image: webllmplatformacr.azurecr.io/webllm-router:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: CONFIG_PATH
+              value: /app/config/config.yaml
+            - name: AZURE_OPENAI_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: azure-openai-secrets
+                  key: endpoint
+            - name: REDIS_HOST
+              value: "webllm-platform-redis.redis.cache.windows.net"
+            - name: COSMOS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: cosmos-secrets
+                  key: endpoint
+          resources:
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: router-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webllm-router
+  namespace: webllm-router
+  labels:
+    app: webllm-router
+spec:
+  selector:
+    app: webllm-router
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webllm-router-hpa
+  namespace: webllm-router
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webllm-router
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

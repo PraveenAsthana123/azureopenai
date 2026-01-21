@@ -1,0 +1,347 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/Application-Insights-Workbooks/master/schema/workbook.json",
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# RAG Platform Monitoring Dashboard\n\nReal-time monitoring for the Enterprise RAG Platform"
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "name": "TimeRange",
+            "type": 4,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000 },
+                { "durationMs": 14400000 },
+                { "durationMs": 86400000 },
+                { "durationMs": 604800000 }
+              ]
+            }
+          },
+          {
+            "name": "TenantId",
+            "type": 2,
+            "query": "customEvents | where name == 'RAGResponse' | distinct tostring(customDimensions.tenant_id) | order by Column1 asc",
+            "value": "All"
+          }
+        ]
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Overview Metrics"
+      },
+      "name": "overview-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "requests\n| where timestamp {TimeRange}\n| summarize \n    TotalRequests = count(),\n    SuccessRate = round(100.0 * countif(success == true) / count(), 1),\n    AvgLatency = round(avg(duration), 0),\n    P95Latency = round(percentile(duration, 95), 0)",
+        "size": 3,
+        "title": "Request Summary",
+        "queryType": 0,
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Column1"
+          },
+          "leftContent": {
+            "columnMatch": "TotalRequests",
+            "formatter": 12
+          }
+        }
+      },
+      "name": "overview-tiles"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Retrieval Performance"
+      },
+      "name": "retrieval-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "requests\n| where timestamp {TimeRange}\n| where name contains 'retrieve'\n| summarize \n    AvgLatency = avg(duration),\n    P95Latency = percentile(duration, 95),\n    RequestCount = count()\n    by bin(timestamp, 5m)\n| order by timestamp asc",
+        "size": 0,
+        "title": "Retrieval Latency Trend",
+        "queryType": 0,
+        "visualization": "linechart"
+      },
+      "customWidth": "50",
+      "name": "retrieval-latency-chart"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'RetrievalCompleted'\n| extend Intent = tostring(customDimensions.intent)\n| summarize Count = count() by Intent\n| order by Count desc",
+        "size": 0,
+        "title": "Queries by Intent",
+        "queryType": 0,
+        "visualization": "piechart"
+      },
+      "customWidth": "50",
+      "name": "intent-distribution"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'RetrievalCompleted'\n| extend ChunksRetrieved = toint(customDimensions.chunks_count)\n| summarize \n    TotalQueries = count(),\n    EmptyResults = countif(ChunksRetrieved == 0),\n    AvgChunks = round(avg(ChunksRetrieved), 1)\n| extend EmptyRate = round(100.0 * EmptyResults / TotalQueries, 2)",
+        "size": 3,
+        "title": "Retrieval Quality",
+        "queryType": 0,
+        "visualization": "tiles"
+      },
+      "name": "retrieval-quality"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## RAG Quality Metrics"
+      },
+      "name": "quality-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'RAGResponse'\n| extend GroundednessScore = todouble(customDimensions.groundedness_score)\n| summarize AvgGroundedness = round(avg(GroundednessScore), 3) by bin(timestamp, 1h)\n| render timechart",
+        "size": 0,
+        "title": "Groundedness Score Trend",
+        "queryType": 0,
+        "visualization": "linechart",
+        "chartSettings": {
+          "ySettings": {
+            "min": 0,
+            "max": 1
+          }
+        }
+      },
+      "customWidth": "50",
+      "name": "groundedness-trend"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'RAGResponse'\n| extend CitationCount = toint(customDimensions.citation_count)\n| summarize \n    Count = count(),\n    AvgCitations = round(avg(CitationCount), 1)\n    by bin(timestamp, 1h)\n| render timechart",
+        "size": 0,
+        "title": "Citation Usage Trend",
+        "queryType": 0,
+        "visualization": "linechart"
+      },
+      "customWidth": "50",
+      "name": "citation-trend"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'UserFeedback'\n| extend FeedbackType = tostring(customDimensions.feedback_type)\n| summarize Count = count() by FeedbackType\n| order by Count desc",
+        "size": 0,
+        "title": "User Feedback Distribution",
+        "queryType": 0,
+        "visualization": "barchart"
+      },
+      "name": "feedback-chart"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## LLM Usage & Costs"
+      },
+      "name": "llm-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'LLMCompletion'\n| extend \n    Model = tostring(customDimensions.model),\n    InputTokens = toint(customDimensions.input_tokens),\n    OutputTokens = toint(customDimensions.output_tokens)\n| summarize \n    Calls = count(),\n    TotalTokens = sum(InputTokens) + sum(OutputTokens)\n    by Model\n| order by TotalTokens desc",
+        "size": 0,
+        "title": "Token Usage by Model",
+        "queryType": 0,
+        "visualization": "barchart"
+      },
+      "customWidth": "50",
+      "name": "token-usage"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'LLMCompletion'\n| extend \n    Model = tostring(customDimensions.model),\n    InputTokens = toint(customDimensions.input_tokens),\n    OutputTokens = toint(customDimensions.output_tokens)\n| extend \n    Cost = case(\n        Model == 'gpt-4o', (InputTokens * 0.0025 + OutputTokens * 0.01) / 1000,\n        Model == 'gpt-4o-mini', (InputTokens * 0.00015 + OutputTokens * 0.0006) / 1000,\n        Model == 'text-embedding-3-large', InputTokens * 0.00013 / 1000,\n        0.0\n    )\n| summarize DailyCost = round(sum(Cost), 2) by bin(timestamp, 1d)\n| render columnchart",
+        "size": 0,
+        "title": "Daily Cost Trend",
+        "queryType": 0,
+        "visualization": "columnchart"
+      },
+      "customWidth": "50",
+      "name": "cost-trend"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Security & Access"
+      },
+      "name": "security-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'ACLFilterApplied'\n| extend Strategy = tostring(customDimensions.strategy)\n| summarize Count = count() by Strategy",
+        "size": 0,
+        "title": "ACL Filter Strategy Distribution",
+        "queryType": 0,
+        "visualization": "piechart"
+      },
+      "customWidth": "33",
+      "name": "acl-strategy"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'DocumentAccessed'\n| extend SensitivityLevel = tostring(customDimensions.sensitivity)\n| summarize Count = count() by SensitivityLevel",
+        "size": 0,
+        "title": "Access by Sensitivity Level",
+        "queryType": 0,
+        "visualization": "piechart"
+      },
+      "customWidth": "33",
+      "name": "sensitivity-access"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'AccessDenied'\n| extend Reason = tostring(customDimensions.reason)\n| summarize Count = count() by Reason\n| order by Count desc\n| take 10",
+        "size": 0,
+        "title": "Access Denied Reasons",
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "33",
+      "name": "access-denied"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Ingestion Pipeline"
+      },
+      "name": "ingestion-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'IngestionCompleted' or name == 'IngestionFailed'\n| extend Status = case(name == 'IngestionCompleted', 'Success', 'Failed')\n| summarize Count = count() by bin(timestamp, 1h), Status\n| render columnchart",
+        "size": 0,
+        "title": "Ingestion Status Over Time",
+        "queryType": 0,
+        "visualization": "columnchart"
+      },
+      "customWidth": "50",
+      "name": "ingestion-status"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'IngestionCompleted'\n| extend ProcessingTimeMs = todouble(customDimensions.processing_time_ms)\n| summarize \n    AvgTime = round(avg(ProcessingTimeMs) / 1000, 1),\n    P95Time = round(percentile(ProcessingTimeMs, 95) / 1000, 1),\n    Count = count()\n    by bin(timestamp, 1h)\n| render linechart",
+        "size": 0,
+        "title": "Processing Time Trend (seconds)",
+        "queryType": 0,
+        "visualization": "linechart"
+      },
+      "customWidth": "50",
+      "name": "processing-time"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Errors & Exceptions"
+      },
+      "name": "errors-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "exceptions\n| where timestamp {TimeRange}\n| summarize Count = count() by type, outerMessage\n| order by Count desc\n| take 10",
+        "size": 0,
+        "title": "Top Exceptions",
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "50",
+      "name": "top-exceptions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "requests\n| where timestamp {TimeRange}\n| where success == false\n| summarize Count = count() by bin(timestamp, 15m)\n| render areachart",
+        "size": 0,
+        "title": "Failed Requests Over Time",
+        "queryType": 0,
+        "visualization": "areachart"
+      },
+      "customWidth": "50",
+      "name": "failed-requests"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Agent & Tools"
+      },
+      "name": "agent-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'ToolExecuted'\n| extend \n    ToolName = tostring(customDimensions.tool_name),\n    Success = tobool(customDimensions.success)\n| summarize \n    Calls = count(),\n    SuccessRate = round(100.0 * countif(Success == true) / count(), 1)\n    by ToolName\n| order by Calls desc",
+        "size": 0,
+        "title": "Tool Usage & Success Rate",
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "50",
+      "name": "tool-usage"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "customEvents\n| where timestamp {TimeRange}\n| where name == 'ApprovalRequested'\n| extend \n    Approved = tobool(customDimensions.approved),\n    ToolName = tostring(customDimensions.tool_name)\n| summarize \n    Total = count(),\n    Approved = countif(Approved == true),\n    Rejected = countif(Approved == false)\n    by ToolName",
+        "size": 0,
+        "title": "Approval Gate Statistics",
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "50",
+      "name": "approval-stats"
+    }
+  ],
+  "styleSettings": {},
+  "defaultResourceIds": []
+}

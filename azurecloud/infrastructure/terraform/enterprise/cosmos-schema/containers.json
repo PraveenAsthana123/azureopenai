@@ -1,0 +1,258 @@
+{
+  "cosmos_database": "genai_platform",
+  "containers": [
+    {
+      "name": "sessions",
+      "description": "User conversation sessions with short-term memory",
+      "partition_key": "/user_id",
+      "default_ttl": 86400,
+      "indexing_policy": {
+        "indexingMode": "consistent",
+        "automatic": true,
+        "includedPaths": [
+          { "path": "/user_id/?" },
+          { "path": "/session_id/?" },
+          { "path": "/created_at/?" },
+          { "path": "/last_activity/?" },
+          { "path": "/status/?" }
+        ],
+        "excludedPaths": [
+          { "path": "/short_term_memory/*" },
+          { "path": "/conversation_history/*" },
+          { "path": "/_etag/?" }
+        ]
+      },
+      "unique_keys": [
+        { "paths": ["/session_id"] }
+      ],
+      "schema": {
+        "id": "string (GUID)",
+        "user_id": "string (Entra object ID) - PARTITION KEY",
+        "session_id": "string (GUID)",
+        "created_at": "string (ISO 8601)",
+        "last_activity": "string (ISO 8601)",
+        "status": "string (active|paused|ended)",
+        "ttl": "number (seconds)",
+        "context": {
+          "business_unit": "string",
+          "department": "string",
+          "locale": "string",
+          "timezone": "string"
+        },
+        "short_term_memory": {
+          "recent_queries": ["string"],
+          "recent_intents": ["string"],
+          "recent_topics": ["string"],
+          "entity_mentions": [
+            {
+              "entity": "string",
+              "type": "string",
+              "count": "number"
+            }
+          ]
+        },
+        "conversation_history": [
+          {
+            "turn_id": "number",
+            "role": "string (user|assistant|system)",
+            "content": "string",
+            "timestamp": "string (ISO 8601)",
+            "tokens": "number",
+            "citations": ["string"]
+          }
+        ],
+        "tools_used": [
+          {
+            "tool_name": "string",
+            "used_at": "string (ISO 8601)",
+            "success": "boolean"
+          }
+        ],
+        "preferences": {
+          "response_length": "string (concise|detailed)",
+          "language": "string",
+          "format": "string (text|markdown|json)"
+        },
+        "metadata": {
+          "client_type": "string (web|mobile|api|teams)",
+          "client_version": "string",
+          "ip_address": "string"
+        }
+      }
+    },
+    {
+      "name": "answer_cache",
+      "description": "Cached RAG responses for performance",
+      "partition_key": "/query_hash",
+      "default_ttl": 3600,
+      "indexing_policy": {
+        "indexingMode": "consistent",
+        "automatic": true,
+        "includedPaths": [
+          { "path": "/query_hash/?" },
+          { "path": "/created_at/?" },
+          { "path": "/hit_count/?" },
+          { "path": "/filters_hash/?" }
+        ],
+        "excludedPaths": [
+          { "path": "/response/*" },
+          { "path": "/chunks_used/*" },
+          { "path": "/_etag/?" }
+        ]
+      },
+      "schema": {
+        "id": "string (query_hash)",
+        "query_hash": "string (SHA256 of normalized query) - PARTITION KEY",
+        "query_normalized": "string",
+        "query_original": "string",
+        "filters_hash": "string (SHA256 of filters)",
+        "filters": {
+          "business_unit": "string",
+          "doc_types": ["string"],
+          "date_range": {
+            "from": "string",
+            "to": "string"
+          }
+        },
+        "response": {
+          "answer": "string",
+          "confidence": "number (0-1)",
+          "model_used": "string"
+        },
+        "citations": [
+          {
+            "document_id": "string",
+            "chunk_id": "string",
+            "title": "string",
+            "excerpt": "string",
+            "relevance_score": "number"
+          }
+        ],
+        "chunks_used": [
+          {
+            "chunk_id": "string",
+            "document_id": "string",
+            "score": "number"
+          }
+        ],
+        "grounding_score": "number (0-1)",
+        "relevance_score": "number (0-1)",
+        "tokens_used": {
+          "prompt": "number",
+          "completion": "number"
+        },
+        "latency_ms": "number",
+        "created_at": "string (ISO 8601)",
+        "hit_count": "number",
+        "last_hit_at": "string (ISO 8601)",
+        "ttl": "number (seconds)"
+      }
+    },
+    {
+      "name": "retrieval_cache",
+      "description": "Cached retrieval results (chunks)",
+      "partition_key": "/retrieval_hash",
+      "default_ttl": 1800,
+      "indexing_policy": {
+        "indexingMode": "consistent",
+        "automatic": true,
+        "includedPaths": [
+          { "path": "/retrieval_hash/?" },
+          { "path": "/created_at/?" }
+        ],
+        "excludedPaths": [
+          { "path": "/chunks/*" },
+          { "path": "/_etag/?" }
+        ]
+      },
+      "schema": {
+        "id": "string (retrieval_hash)",
+        "retrieval_hash": "string (SHA256 of query + filters) - PARTITION KEY",
+        "query_embedding_hash": "string",
+        "filters": "object",
+        "chunks": [
+          {
+            "chunk_id": "string",
+            "document_id": "string",
+            "document_title": "string",
+            "chunk_text": "string",
+            "heading_path": "string",
+            "score": "number",
+            "rerank_score": "number"
+          }
+        ],
+        "total_found": "number",
+        "search_latency_ms": "number",
+        "rerank_latency_ms": "number",
+        "created_at": "string (ISO 8601)",
+        "ttl": "number"
+      }
+    },
+    {
+      "name": "rate_limits",
+      "description": "Per-user rate limit tracking",
+      "partition_key": "/user_id",
+      "default_ttl": 86400,
+      "indexing_policy": {
+        "indexingMode": "consistent",
+        "automatic": true,
+        "includedPaths": [
+          { "path": "/user_id/?" },
+          { "path": "/window_start/?" }
+        ],
+        "excludedPaths": [
+          { "path": "/_etag/?" }
+        ]
+      },
+      "schema": {
+        "id": "string (user_id + window)",
+        "user_id": "string - PARTITION KEY",
+        "window_type": "string (minute|hour|day)",
+        "window_start": "string (ISO 8601)",
+        "request_count": "number",
+        "token_count": "number",
+        "last_request_at": "string (ISO 8601)",
+        "throttled_count": "number",
+        "ttl": "number"
+      }
+    },
+    {
+      "name": "user_feedback",
+      "description": "User feedback on responses",
+      "partition_key": "/user_id",
+      "default_ttl": -1,
+      "indexing_policy": {
+        "indexingMode": "consistent",
+        "automatic": true,
+        "includedPaths": [
+          { "path": "/user_id/?" },
+          { "path": "/query_id/?" },
+          { "path": "/rating/?" },
+          { "path": "/created_at/?" }
+        ],
+        "excludedPaths": [
+          { "path": "/_etag/?" }
+        ]
+      },
+      "schema": {
+        "id": "string (GUID)",
+        "user_id": "string - PARTITION KEY",
+        "query_id": "string",
+        "session_id": "string",
+        "rating": "number (1-5)",
+        "feedback_type": "string (helpful|not_helpful|inaccurate|incomplete|other)",
+        "feedback_text": "string",
+        "query_text": "string",
+        "response_excerpt": "string",
+        "created_at": "string (ISO 8601)"
+      }
+    }
+  ],
+  "stored_procedures": [
+    {
+      "name": "incrementHitCount",
+      "description": "Atomically increment cache hit count",
+      "body": "function incrementHitCount(id) { var collection = getContext().getCollection(); var response = getContext().getResponse(); var query = 'SELECT * FROM c WHERE c.id = \"' + id + '\"'; var isAccepted = collection.queryDocuments(collection.getSelfLink(), query, function(err, docs) { if (err) throw err; if (docs.length === 0) { response.setBody({found: false}); return; } var doc = docs[0]; doc.hit_count = (doc.hit_count || 0) + 1; doc.last_hit_at = new Date().toISOString(); collection.replaceDocument(doc._self, doc, function(err) { if (err) throw err; response.setBody({found: true, hit_count: doc.hit_count}); }); }); if (!isAccepted) throw new Error('Query not accepted'); }"
+    }
+  ]
+}

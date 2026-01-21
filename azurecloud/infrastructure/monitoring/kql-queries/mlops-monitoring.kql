@@ -1,0 +1,401 @@
+// ============================================================================
+// MLOps Monitoring KQL Queries for Enterprise RAG Platform
+// ============================================================================
+// Use in Azure Monitor / Log Analytics / Application Insights
+// ============================================================================
+
+// ============================================================================
+// 1. LATENCY MONITORING
+// ============================================================================
+
+// End-to-End Request Latency (P50, P95, P99)
+requests
+| where url contains "/chat" or url contains "/query"
+| summarize
+    p50 = percentile(duration, 50),
+    p95 = percentile(duration, 95),
+    p99 = percentile(duration, 99),
+    avg_latency = avg(duration),
+    request_count = count()
+  by bin(timestamp, 5m)
+| render timechart
+
+// Component-Level Latency Breakdown
+traces
+| where customDimensions.step in ("hybrid_search", "openai_completion", "context_assembly", "embedding", "rerank")
+| extend
+    step = tostring(customDimensions.step),
+    latency_ms = toint(customDimensions.latency_ms)
+| summarize
+    avg_latency = avg(latency_ms),
+    p95 = percentile(latency_ms, 95),
+    p99 = percentile(latency_ms, 99)
+  by step, bin(timestamp, 5m)
+| render timechart
+
+// Slow Query Detection (> 5 seconds)
+requests
+| where url contains "/chat"
+| where duration > 5000
+| project timestamp, url, duration, customDimensions.user_id, customDimensions.session_id
+| order by duration desc
+| take 100
+
+// ============================================================================
+// 2. TOKEN USAGE & COST MONITORING
+// ============================================================================
+
+// Token Usage by Model
+traces
+| where customDimensions.step == "openai_completion"
+| extend
+    model = tostring(customDimensions.model),
+    prompt_tokens = toint(customDimensions.prompt_tokens),
+    completion_tokens = toint(customDimensions.completion_tokens)
+| summarize
+    total_prompt = sum(prompt_tokens),
+    total_completion = sum(completion_tokens),
+    request_count = count()
+  by model, bin(timestamp, 1h)
+| extend
+    total_tokens = total_prompt + total_completion,
+    // GPT-4o pricing: $2.50/1M input, $10/1M output
+    cost_usd = (total_prompt / 1000000.0 * 2.5) + (total_completion / 1000000.0 * 10.0)
+| render timechart
+
+// Daily Cost Estimate
+traces
+| where customDimensions.step == "openai_completion"
+| extend
+    prompt_tokens = toint(customDimensions.prompt_tokens),
+    completion_tokens = toint(customDimensions.completion_tokens)
+| summarize
+    total_prompt = sum(prompt_tokens),
+    total_completion = sum(completion_tokens)
+  by bin(timestamp, 1d)
+| extend
+    cost_usd = (total_prompt / 1000000.0 * 2.5) + (total_completion / 1000000.0 * 10.0)
+| project timestamp, total_prompt, total_completion, cost_usd
+
+// Token Usage by Tenant (for chargeback)
+traces
+| where customDimensions.step == "openai_completion"
+| extend
+    tenant_id = tostring(customDimensions.tenant_id),
+    prompt_tokens = toint(customDimensions.prompt_tokens),
+    completion_tokens = toint(customDimensions.completion_tokens)
+| summarize
+    total_tokens = sum(prompt_tokens) + sum(completion_tokens),
+    request_count = count()
+  by tenant_id, bin(timestamp, 1d)
+| order by total_tokens desc
+
+// ============================================================================
+// 3. RETRIEVAL QUALITY MONITORING
+// ============================================================================
+
+// Retrieval Score Distribution
+traces
+| where customDimensions.step == "hybrid_search"
+| extend
+    top_score = todouble(customDimensions.top_score),
+    result_count = toint(customDimensions.result_count)
+| summarize
+    avg_score = avg(top_score),
+    p50_score = percentile(top_score, 50),
+    p95_score = percentile(top_score, 95),
+    avg_results = avg(result_count)
+  by bin(timestamp, 1h)
+| render timechart
+
+// No-Result Rate (Retrieval Failures)
+traces
+| where customDimensions.step == "hybrid_search"
+| extend result_count = toint(customDimensions.result_count)
+| summarize
+    no_results = countif(result_count == 0),
+    total = count()
+  by bin(timestamp, 1h)
+| extend no_result_rate = todouble(no_results) / total * 100
+| render timechart
+
+// Retrieval Drift Detection (Score Trend)
+traces
+| where customDimensions.step == "hybrid_search"
+| extend score = todouble(customDimensions.top_score)
+| summarize
+    daily_avg = avg(score),
+    daily_p95 = percentile(score, 95)
+  by bin(timestamp, 1d)
+| order by timestamp asc
+| serialize
+| extend
+    prev_avg = prev(daily_avg, 1),
+    score_change = (daily_avg - prev(daily_avg, 1)) / prev(daily_avg, 1) * 100
+| where isnotnull(prev_avg)
+
+// ============================================================================
+// 4. ONLINE EVALUATION METRICS
+// ============================================================================
+
+// Groundedness & Relevance Trends (from online eval)
+traces
+| where customDimensions.event == "online_eval_summary"
+| extend
+    groundedness = todouble(customDimensions.groundedness_avg),
+    relevance = todouble(customDimensions.relevance_avg),
+    citation_accuracy = todouble(customDimensions.citation_accuracy_avg),
+    overall = todouble(customDimensions.overall_avg)
+| summarize
+    avg(groundedness),
+    avg(relevance),
+    avg(citation_accuracy),
+    avg(overall)
+  by bin(timestamp, 1d)
+| render timechart
+
+// Hallucination Proxy (Low Groundedness)
+traces
+| where customDimensions.event == "online_eval_result"
+| extend groundedness = todouble(customDimensions.groundedness)
+| summarize
+    low_groundedness = countif(groundedness < 0.7),
+    total = count()
+  by bin(timestamp, 1d)
+| extend hallucination_rate = todouble(low_groundedness) / total * 100
+| render columnchart
+
+// Evaluation Pass Rate Over Time
+traces
+| where customDimensions.event == "online_eval_result"
+| extend overall = todouble(customDimensions.overall)
+| summarize
+    passed = countif(overall >= 0.7),
+    total = count()
+  by bin(timestamp, 1d)
+| extend pass_rate = todouble(passed) / total * 100
+
+// ============================================================================
+// 5. USER FEEDBACK MONITORING
+// ============================================================================
+
+// Feedback Distribution (Thumbs Up/Down)
+traces
+| where customDimensions.event == "user_feedback"
+| extend rating = tostring(customDimensions.rating)
+| summarize
+    thumbs_up = countif(rating == "up"),
+    thumbs_down = countif(rating == "down")
+  by bin(timestamp, 1d)
+| extend
+    total = thumbs_up + thumbs_down,
+    satisfaction_rate = todouble(thumbs_up) / (thumbs_up + thumbs_down) * 100
+| render barchart
+
+// Negative Feedback by Reason
+traces
+| where customDimensions.event == "user_feedback"
+| where customDimensions.rating == "down"
+| extend reason = tostring(customDimensions.reason)
+| summarize count() by reason
+| order by count_ desc
+
+// Feedback Correlation with Quality
+traces
+| where customDimensions.event == "user_feedback"
+| extend
+    rating = tostring(customDimensions.rating),
+    session_id = tostring(customDimensions.session_id)
+| join kind=inner (
+    traces
+    | where customDimensions.event == "online_eval_result"
+    | extend
+        session_id = tostring(customDimensions.session_id),
+        overall = todouble(customDimensions.overall)
+  ) on session_id
+| summarize
+    avg_score_positive = avgif(overall, rating == "up"),
+    avg_score_negative = avgif(overall, rating == "down")
+
+// ============================================================================
+// 6. ERROR MONITORING
+// ============================================================================
+
+// Error Rate by Endpoint
+requests
+| where success == false
+| summarize
+    errors = count(),
+    total = count()
+  by url, bin(timestamp, 1h)
+| extend error_rate = todouble(errors) / total * 100
+| where error_rate > 0
+
+// Top Errors by Type
+exceptions
+| summarize count() by type, outerMessage
+| order by count_ desc
+| take 20
+
+// Failed Queries Analysis
+exceptions
+| extend user_query = tostring(customDimensions.user_query)
+| summarize fail_count = count() by user_query
+| order by fail_count desc
+| take 10
+
+// Rate Limiting Events
+traces
+| where customDimensions.event == "rate_limit_exceeded"
+| summarize count() by
+    tostring(customDimensions.tenant_id),
+    bin(timestamp, 1h)
+
+// ============================================================================
+// 7. SAFETY MONITORING
+// ============================================================================
+
+// Safety Violations by Type
+traces
+| where customDimensions.event == "safety_violation"
+| extend
+    violation_type = tostring(customDimensions.violation_type),
+    severity = tostring(customDimensions.severity)
+| summarize count() by violation_type, severity, bin(timestamp, 1d)
+| render columnchart
+
+// Prompt Injection Attempts
+traces
+| where customDimensions.event == "prompt_injection_detected"
+| summarize
+    attempts = count(),
+    unique_users = dcount(tostring(customDimensions.user_id))
+  by bin(timestamp, 1h)
+
+// PII Detection Events
+traces
+| where customDimensions.event == "pii_detected"
+| extend pii_type = tostring(customDimensions.pii_type)
+| summarize count() by pii_type, bin(timestamp, 1d)
+
+// ============================================================================
+// 8. MODEL PERFORMANCE MONITORING
+// ============================================================================
+
+// Model Deployment Health
+traces
+| where customDimensions.step == "openai_completion"
+| extend
+    model = tostring(customDimensions.model),
+    success = tobool(customDimensions.success)
+| summarize
+    success_count = countif(success == true),
+    fail_count = countif(success == false),
+    total = count()
+  by model, bin(timestamp, 1h)
+| extend success_rate = todouble(success_count) / total * 100
+
+// Token Efficiency (Tokens per Request)
+traces
+| where customDimensions.step == "openai_completion"
+| extend
+    total_tokens = toint(customDimensions.prompt_tokens) + toint(customDimensions.completion_tokens)
+| summarize
+    avg_tokens = avg(total_tokens),
+    p95_tokens = percentile(total_tokens, 95)
+  by bin(timestamp, 1h)
+
+// ============================================================================
+// 9. DRIFT & ANOMALY DETECTION
+// ============================================================================
+
+// Query Pattern Drift
+traces
+| where customDimensions.step == "intent_classification"
+| extend intent = tostring(customDimensions.intent)
+| summarize count() by intent, bin(timestamp, 1d)
+| render areachart
+
+// Embedding Drift (Cosine Similarity Distribution)
+traces
+| where customDimensions.event == "embedding_similarity"
+| extend similarity = todouble(customDimensions.similarity)
+| summarize
+    avg_similarity = avg(similarity),
+    p10_similarity = percentile(similarity, 10)
+  by bin(timestamp, 1d)
+
+// Sudden Latency Spikes
+let baseline =
+    traces
+    | where customDimensions.step == "openai_completion"
+    | where timestamp between (ago(7d) .. ago(1d))
+    | summarize baseline_p95 = percentile(toint(customDimensions.latency_ms), 95);
+traces
+| where customDimensions.step == "openai_completion"
+| where timestamp > ago(1d)
+| extend latency_ms = toint(customDimensions.latency_ms)
+| summarize current_p95 = percentile(latency_ms, 95) by bin(timestamp, 1h)
+| extend baseline_p95 = toscalar(baseline)
+| where current_p95 > baseline_p95 * 1.5
+
+// ============================================================================
+// 10. ALERT RULES (use as basis for Azure Monitor Alerts)
+// ============================================================================
+
+// ALERT: High Latency (P95 > 5s)
+requests
+| where url contains "/chat"
+| where timestamp > ago(10m)
+| summarize p95 = percentile(duration, 95)
+| where p95 > 5000
+
+// ALERT: Error Rate > 5%
+requests
+| where timestamp > ago(10m)
+| summarize
+    errors = countif(success == false),
+    total = count()
+| extend error_rate = todouble(errors) / total * 100
+| where error_rate > 5
+
+// ALERT: Daily Cost Exceeds Budget
+traces
+| where customDimensions.step == "openai_completion"
+| where timestamp > ago(1d)
+| extend
+    prompt_tokens = toint(customDimensions.prompt_tokens),
+    completion_tokens = toint(customDimensions.completion_tokens)
+| summarize
+    total_cost = sum(prompt_tokens / 1000000.0 * 2.5 + completion_tokens / 1000000.0 * 10.0)
+| where total_cost > 100  // $100 daily budget
+
+// ALERT: Groundedness Drop > 10%
+traces
+| where customDimensions.event == "online_eval_summary"
+| where timestamp > ago(1d)
+| extend groundedness = todouble(customDimensions.groundedness_avg)
+| summarize avg(groundedness)
+| where avg_groundedness < 0.8  // baseline threshold
+
+// ALERT: High Hallucination Rate
+traces
+| where customDimensions.event == "online_eval_result"
+| where timestamp > ago(1d)
+| extend groundedness = todouble(customDimensions.groundedness)
+| summarize
+    low = countif(groundedness < 0.7),
+    total = count()
+| extend rate = todouble(low) / total * 100
+| where rate > 20
+
+// ALERT: User Dissatisfaction Spike
+traces
+| where customDimensions.event == "user_feedback"
+| where timestamp > ago(1d)
+| extend rating = tostring(customDimensions.rating)
+| summarize
+    down = countif(rating == "down"),
+    total = count()
+| extend dissatisfaction = todouble(down) / total * 100
+| where dissatisfaction > 20

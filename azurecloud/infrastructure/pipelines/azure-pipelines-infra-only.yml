@@ -1,0 +1,181 @@
+# ============================================================================
+# Infrastructure-Only Pipeline
+# ============================================================================
+#
+# Use this pipeline for infrastructure changes without application deployment
+#
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infrastructure/bicep/**
+      - infrastructure/terraform/**
+
+parameters:
+  - name: environment
+    displayName: 'Target Environment'
+    type: string
+    default: 'dev'
+    values:
+      - dev
+      - staging
+      - prod
+
+  - name: deploymentMode
+    displayName: 'Deployment Mode'
+    type: string
+    default: 'Incremental'
+    values:
+      - Incremental
+      - Complete
+      - Validate
+
+variables:
+  - group: rag-platform-secrets-${{ parameters.environment }}
+  - name: resourceGroup
+    value: 'rg-rag-platform-${{ parameters.environment }}'
+
+stages:
+  # ============================================================================
+  # Validate Infrastructure
+  # ============================================================================
+  - stage: Validate
+    displayName: 'Validate Infrastructure'
+    jobs:
+      - job: ValidateBicep
+        displayName: 'Validate Bicep Templates'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Lint Bicep files
+                az bicep build --file infrastructure/bicep/main.bicep
+
+                # Validate deployment
+                az deployment group validate \
+                  --resource-group $(resourceGroup) \
+                  --template-file infrastructure/bicep/main.bicep \
+                  --parameters environment=${{ parameters.environment }} \
+                  --parameters ownerEmail=$(ownerEmail)
+            displayName: 'Validate Bicep'
+
+          - script: |
+              # Run Bicep linter
+              az bicep lint --file infrastructure/bicep/main.bicep
+            displayName: 'Lint Bicep'
+            continueOnError: true
+
+  # ============================================================================
+  # What-If Analysis
+  # ============================================================================
+  - stage: WhatIf
+    displayName: 'What-If Analysis'
+    dependsOn: Validate
+    condition: ne('${{ parameters.deploymentMode }}', 'Validate')
+    jobs:
+      - job: WhatIfAnalysis
+        displayName: 'Show Planned Changes'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment group what-if \
+                  --resource-group $(resourceGroup) \
+                  --template-file infrastructure/bicep/main.bicep \
+                  --parameters environment=${{ parameters.environment }} \
+                  --parameters ownerEmail=$(ownerEmail)
+            displayName: 'What-If analysis'
+
+  # ============================================================================
+  # Deploy Infrastructure
+  # ============================================================================
+  - stage: Deploy
+    displayName: 'Deploy Infrastructure'
+    dependsOn: WhatIf
+    condition: and(succeeded(), ne('${{ parameters.deploymentMode }}', 'Validate'))
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy to ${{ parameters.environment }}'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: '${{ parameters.environment }}'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment group create \
+                        --resource-group $(resourceGroup) \
+                        --template-file infrastructure/bicep/main.bicep \
+                        --parameters environment=${{ parameters.environment }} \
+                        --parameters ownerEmail=$(ownerEmail) \
+                        --parameters enablePrivateEndpoints=${{ eq(parameters.environment, 'prod') }} \
+                        --mode ${{ parameters.deploymentMode }}
+                  displayName: 'Deploy Bicep'
+
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Output deployment results
+                      az deployment group show \
+                        --resource-group $(resourceGroup) \
+                        --name main \
+                        --query properties.outputs
+                  displayName: 'Show deployment outputs'
+
+  # ============================================================================
+  # Verify Deployment
+  # ============================================================================
+  - stage: Verify
+    displayName: 'Verify Deployment'
+    dependsOn: Deploy
+    condition: succeeded()
+    jobs:
+      - job: VerifyResources
+        displayName: 'Verify Resources'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Verify key resources exist
+                echo "Checking Azure OpenAI..."
+                az cognitiveservices account show -g $(resourceGroup) --name oai-* --query "properties.provisioningState"
+
+                echo "Checking Azure AI Search..."
+                az search service show -g $(resourceGroup) --name srch-* --query "status"
+
+                echo "Checking Cosmos DB..."
+                az cosmosdb show -g $(resourceGroup) --name cosmos-* --query "documentEndpoint"
+
+                echo "Checking Function App..."
+                az functionapp show -g $(resourceGroup) --name func-* --query "state"
+            displayName: 'Verify resources'

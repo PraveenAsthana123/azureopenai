@@ -1,0 +1,216 @@
+# Azure DevOps Pipeline for Azure Functions Deployment
+# Builds and deploys Python Azure Functions
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - backend/azure-functions/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - backend/azure-functions/**
+
+variables:
+  - group: genai-copilot-vars
+  - name: pythonVersion
+    value: '3.11'
+  - name: functionAppsPath
+    value: 'backend/azure-functions'
+
+stages:
+  # Build Stage
+  - stage: Build
+    displayName: 'Build Functions'
+    jobs:
+      - job: Build
+        displayName: 'Build and Test'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          matrix:
+            api-gateway:
+              functionApp: 'api-gateway'
+            orchestrator:
+              functionApp: 'orchestrator'
+            ingestion:
+              functionApp: 'ingestion'
+            rag-processor:
+              functionApp: 'rag-processor'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Use Python $(pythonVersion)'
+            inputs:
+              versionSpec: $(pythonVersion)
+
+          - script: |
+              cd $(functionAppsPath)/$(functionApp)
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install pytest pytest-cov
+            displayName: 'Install Dependencies'
+
+          - script: |
+              cd $(functionAppsPath)/$(functionApp)
+              pytest tests/ --junitxml=test-results.xml --cov=. --cov-report=xml || true
+            displayName: 'Run Tests'
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+            condition: always()
+
+          - task: PublishCodeCoverageResults@1
+            displayName: 'Publish Coverage'
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '**/coverage.xml'
+            condition: always()
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive Function App'
+            inputs:
+              rootFolderOrFile: '$(functionAppsPath)/$(functionApp)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(functionApp).zip'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/$(functionApp).zip'
+              artifact: '$(functionApp)'
+
+  # Deploy to Dev
+  - stage: DeployDev
+    displayName: 'Deploy to Dev'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployFunctions
+        displayName: 'Deploy Functions'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'api-gateway'
+                - download: current
+                  artifact: 'orchestrator'
+                - download: current
+                  artifact: 'ingestion'
+                - download: current
+                  artifact: 'rag-processor'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy API Gateway'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_API_GATEWAY_DEV)
+                    package: '$(Pipeline.Workspace)/api-gateway/api-gateway.zip'
+                    runtimeStack: 'PYTHON|3.11'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy Orchestrator'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_ORCHESTRATOR_DEV)
+                    package: '$(Pipeline.Workspace)/orchestrator/orchestrator.zip'
+                    runtimeStack: 'PYTHON|3.11'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy Ingestion'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_INGESTION_DEV)
+                    package: '$(Pipeline.Workspace)/ingestion/ingestion.zip'
+                    runtimeStack: 'PYTHON|3.11'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy RAG Processor'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_RAG_DEV)
+                    package: '$(Pipeline.Workspace)/rag-processor/rag-processor.zip'
+                    runtimeStack: 'PYTHON|3.11'
+
+  # Deploy to Prod
+  - stage: DeployProd
+    displayName: 'Deploy to Prod'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployFunctions
+        displayName: 'Deploy Functions'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'api-gateway'
+                - download: current
+                  artifact: 'orchestrator'
+                - download: current
+                  artifact: 'ingestion'
+                - download: current
+                  artifact: 'rag-processor'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy API Gateway'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_API_GATEWAY_PROD)
+                    package: '$(Pipeline.Workspace)/api-gateway/api-gateway.zip'
+                    runtimeStack: 'PYTHON|3.11'
+                    deploymentMethod: 'zipDeploy'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy Orchestrator'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_ORCHESTRATOR_PROD)
+                    package: '$(Pipeline.Workspace)/orchestrator/orchestrator.zip'
+                    runtimeStack: 'PYTHON|3.11'
+                    deploymentMethod: 'zipDeploy'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy Ingestion'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_INGESTION_PROD)
+                    package: '$(Pipeline.Workspace)/ingestion/ingestion.zip'
+                    runtimeStack: 'PYTHON|3.11'
+                    deploymentMethod: 'zipDeploy'
+
+                - task: AzureFunctionApp@1
+                  displayName: 'Deploy RAG Processor'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    appType: 'functionAppLinux'
+                    appName: $(FUNC_RAG_PROD)
+                    package: '$(Pipeline.Workspace)/rag-processor/rag-processor.zip'
+                    runtimeStack: 'PYTHON|3.11'
+                    deploymentMethod: 'zipDeploy'

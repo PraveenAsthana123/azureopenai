@@ -1,0 +1,179 @@
+#===============================================================================
+# Azure DevOps CI Pipeline
+# Continuous Integration for Azure AI/ML Platform
+#===============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - feature/*
+  paths:
+    include:
+      - src/*
+      - tests/*
+      - requirements*.txt
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  - group: Azure-Credentials-$(ENVIRONMENT)
+  - group: App-Settings-$(ENVIRONMENT)
+  - name: pythonVersion
+    value: '3.11'
+
+stages:
+  #-----------------------------------------------------------------------------
+  # Stage 1: Build and Test
+  #-----------------------------------------------------------------------------
+  - stage: Build
+    displayName: 'Build & Test'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build Python Application'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Use Python $(pythonVersion)'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install -r requirements-dev.txt
+            displayName: 'Install dependencies'
+
+          - script: |
+              pip install flake8 black isort mypy
+              flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+              black --check src/
+              isort --check-only src/
+            displayName: 'Code quality checks'
+            continueOnError: true
+
+          - script: |
+              pip install pytest pytest-cov pytest-asyncio
+              pytest tests/ \
+                --cov=src \
+                --cov-report=xml \
+                --cov-report=html \
+                --junitxml=test-results.xml
+            displayName: 'Run tests with coverage'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish test results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+              mergeTestResults: true
+              testRunTitle: 'Python Tests'
+            condition: succeededOrFailed()
+
+          - task: PublishCodeCoverageResults@1
+            displayName: 'Publish code coverage'
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '**/coverage.xml'
+              reportDirectory: '**/htmlcov'
+            condition: succeededOrFailed()
+
+          - script: |
+              pip install bandit safety
+              bandit -r src/ -f json -o bandit-report.json || true
+              safety check --json > safety-report.json || true
+            displayName: 'Security scan'
+            continueOnError: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish security reports'
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)'
+              artifact: 'security-reports'
+              publishLocation: 'pipeline'
+            condition: succeededOrFailed()
+
+  #-----------------------------------------------------------------------------
+  # Stage 2: Package
+  #-----------------------------------------------------------------------------
+  - stage: Package
+    displayName: 'Package Application'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: PackageJob
+        displayName: 'Create deployment package'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install -r requirements.txt
+              mkdir -p $(Build.ArtifactStagingDirectory)/app
+              cp -r src/* $(Build.ArtifactStagingDirectory)/app/
+              cp requirements.txt $(Build.ArtifactStagingDirectory)/app/
+              cp host.json $(Build.ArtifactStagingDirectory)/app/ 2>/dev/null || true
+            displayName: 'Prepare deployment package'
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive application'
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/app'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+              artifact: 'drop'
+
+  #-----------------------------------------------------------------------------
+  # Stage 3: Build Docker Image (Optional)
+  #-----------------------------------------------------------------------------
+  - stage: Docker
+    displayName: 'Build Docker Image'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: DockerBuild
+        displayName: 'Build and Push Docker Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              command: 'login'
+              containerRegistry: 'ACR-ServiceConnection'
+
+          - task: Docker@2
+            displayName: 'Build Docker image'
+            inputs:
+              command: 'build'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+
+          - task: Docker@2
+            displayName: 'Push Docker image'
+            inputs:
+              command: 'push'
+              tags: |
+                $(Build.BuildId)
+                latest

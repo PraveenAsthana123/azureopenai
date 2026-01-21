@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlc-llm
+  labels:
+    app.kubernetes.io/name: mlc-llm
+    app.kubernetes.io/managed-by: kubectl
+    istio-injection: enabled

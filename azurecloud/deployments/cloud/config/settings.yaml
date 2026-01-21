@@ -1,0 +1,286 @@
+# Cloud RAG Platform Configuration
+# Full Azure deployment - production ready
+
+# =============================================================================
+# Deployment Settings
+# =============================================================================
+deployment:
+  mode: azure
+  environment: ${ENVIRONMENT:production}
+  region: ${AZURE_REGION:eastus2}
+  resource_group: ${RESOURCE_GROUP:rg-rag-prod}
+
+# =============================================================================
+# Azure OpenAI
+# =============================================================================
+azure_openai:
+  endpoint: ${AZURE_OPENAI_ENDPOINT}
+  api_version: "2024-02-15-preview"
+  use_managed_identity: true
+
+  deployments:
+    chat:
+      name: gpt-4o-mini
+      model: gpt-4o-mini
+      version: "2024-07-18"
+      capacity: 80  # TPM in thousands
+
+    embedding:
+      name: text-embedding-3-large
+      model: text-embedding-3-large
+      version: "1"
+      capacity: 120
+
+    # Optional: Premium model for complex queries
+    chat_premium:
+      name: gpt-4o
+      model: gpt-4o
+      version: "2024-08-06"
+      capacity: 40
+
+# =============================================================================
+# Azure AI Search
+# =============================================================================
+azure_search:
+  endpoint: ${AZURE_SEARCH_ENDPOINT}
+  use_managed_identity: true
+
+  index:
+    name: rag-multimodal-index
+
+    # Vector configuration
+    vector_config:
+      dimensions: 3072  # text-embedding-3-large
+      algorithm: hnsw
+      metric: cosine
+
+    # Semantic configuration
+    semantic_config:
+      name: default
+      title_field: title
+      content_fields:
+        - content_text
+        - summary
+      keyword_fields:
+        - category
+        - tags
+
+    # Scoring profiles
+    scoring_profiles:
+      - name: recency_boost
+        functions:
+          - type: freshness
+            field: created_at
+            boost: 2.0
+
+# =============================================================================
+# Cosmos DB
+# =============================================================================
+cosmos_db:
+  endpoint: ${COSMOS_ENDPOINT}
+  use_managed_identity: true
+
+  database:
+    name: rag_platform
+    throughput: 4000  # RU/s (autoscale max)
+
+  containers:
+    conversations:
+      name: conversations
+      partition_key: /user_id
+      ttl: -1  # No expiry
+      indexing:
+        automatic: true
+        included_paths:
+          - /*
+        excluded_paths:
+          - /content/*
+
+    documents:
+      name: documents
+      partition_key: /category
+
+    evaluations:
+      name: evaluations
+      partition_key: /run_id
+
+# =============================================================================
+# Azure Blob Storage
+# =============================================================================
+azure_blob:
+  account_name: ${STORAGE_ACCOUNT_NAME}
+  use_managed_identity: true
+
+  containers:
+    documents:
+      name: documents
+      access_level: private
+
+    processed:
+      name: processed
+      access_level: private
+
+    exports:
+      name: exports
+      access_level: private
+
+# =============================================================================
+# Azure Functions
+# =============================================================================
+functions:
+  runtime: python
+  version: "3.11"
+
+  host:
+    extensions:
+      http:
+        routePrefix: api
+        maxConcurrentRequests: 100
+        maxOutstandingRequests: 200
+
+  bindings:
+    cosmos:
+      connection: CosmosConnection
+
+    storage:
+      connection: StorageConnection
+
+# =============================================================================
+# Authentication (Entra ID)
+# =============================================================================
+auth:
+  provider: entra_id
+  tenant_id: ${AZURE_TENANT_ID}
+  client_id: ${AZURE_CLIENT_ID}
+
+  # Required scopes for API access
+  scopes:
+    - api://${AZURE_CLIENT_ID}/Chat.Read
+    - api://${AZURE_CLIENT_ID}/Documents.Write
+
+  # Role-based access
+  roles:
+    admin:
+      - Chat.Read
+      - Chat.Write
+      - Documents.Read
+      - Documents.Write
+      - Admin.All
+
+    user:
+      - Chat.Read
+      - Chat.Write
+      - Documents.Read
+
+    reader:
+      - Chat.Read
+      - Documents.Read
+
+# =============================================================================
+# RAG Configuration
+# =============================================================================
+rag:
+  # Chunking
+  chunk_size: 1000
+  chunk_overlap: 200
+
+  # Retrieval
+  top_k: 5
+  min_relevance_score: 0.7
+
+  # Hybrid search weights
+  hybrid_search:
+    semantic_weight: 0.5
+    vector_weight: 0.5
+    keyword_weight: 0.0
+
+  # Reranking
+  reranking:
+    enabled: true
+    model: cross-encoder
+    top_n: 3
+
+  # Context window
+  max_context_tokens: 8000
+  max_response_tokens: 2000
+
+# =============================================================================
+# Monitoring (Application Insights)
+# =============================================================================
+monitoring:
+  app_insights:
+    connection_string: ${APPINSIGHTS_CONNECTION_STRING}
+    sampling_rate: 100  # percent
+
+  # Custom metrics
+  metrics:
+    - rag_query_latency_ms
+    - rag_tokens_used
+    - rag_relevance_score
+    - rag_cache_hit_rate
+
+  # Alerts
+  alerts:
+    latency_threshold_ms: 5000
+    error_rate_threshold: 0.05
+    availability_threshold: 0.99
+
+# =============================================================================
+# Security
+# =============================================================================
+security:
+  # Data Loss Prevention
+  dlp:
+    enabled: true
+    scan_uploads: true
+    scan_responses: true
+    blocked_patterns:
+      - ssn
+      - credit_card
+      - api_key
+
+  # Content filtering
+  content_filter:
+    enabled: true
+    severity_threshold: medium
+
+  # Network
+  network:
+    private_endpoints: true
+    vnet_integration: true
+    allowed_ips: []  # Empty = all allowed through private endpoint
+
+# =============================================================================
+# Caching
+# =============================================================================
+caching:
+  # Response cache
+  response_cache:
+    enabled: true
+    ttl_seconds: 3600
+    max_entries: 10000
+
+  # Embedding cache
+  embedding_cache:
+    enabled: true
+    ttl_seconds: 86400
+    storage: redis  # or cosmos
+
+# =============================================================================
+# Rate Limiting
+# =============================================================================
+rate_limiting:
+  enabled: true
+
+  tiers:
+    free:
+      requests_per_minute: 10
+      tokens_per_day: 10000
+
+    standard:
+      requests_per_minute: 60
+      tokens_per_day: 100000
+
+    premium:
+      requests_per_minute: 300
+      tokens_per_day: 1000000

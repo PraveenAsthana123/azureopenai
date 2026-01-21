@@ -1,0 +1,225 @@
+# Desktop RAG Platform - Docker Compose
+# Supports LOCAL, HYBRID, and AZURE modes
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # RAG API - FastAPI Application
+  # =============================================================================
+  rag-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Deployment mode: local, hybrid, azure
+      - RAG_DEPLOYMENT_MODE=${RAG_DEPLOYMENT_MODE:-local}
+
+      # Provider selection
+      - RAG_LLM_PROVIDER=${RAG_LLM_PROVIDER:-ollama}
+      - RAG_VECTOR_DB_PROVIDER=${RAG_VECTOR_DB_PROVIDER:-chromadb}
+      - RAG_DATABASE_PROVIDER=${RAG_DATABASE_PROVIDER:-sqlite}
+      - RAG_STORAGE_PROVIDER=${RAG_STORAGE_PROVIDER:-local}
+
+      # Ollama settings (local mode)
+      - RAG_OLLAMA__BASE_URL=http://ollama:11434
+      - RAG_OLLAMA__MODEL=${OLLAMA_MODEL:-llama3.2}
+      - RAG_OLLAMA__EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+
+      # Azure OpenAI settings (hybrid/azure mode)
+      - RAG_AZURE_OPENAI__ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - RAG_AZURE_OPENAI__API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - RAG_AZURE_OPENAI__CHAT_DEPLOYMENT=${AZURE_OPENAI_CHAT_DEPLOYMENT:-gpt-4o-mini}
+      - RAG_AZURE_OPENAI__EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-large}
+
+      # Azure Search settings (azure mode)
+      - RAG_AZURE_SEARCH__ENDPOINT=${AZURE_SEARCH_ENDPOINT:-}
+      - RAG_AZURE_SEARCH__API_KEY=${AZURE_SEARCH_API_KEY:-}
+      - RAG_AZURE_SEARCH__INDEX_NAME=${AZURE_SEARCH_INDEX_NAME:-rag-multimodal-index}
+
+      # ChromaDB settings (local/hybrid mode)
+      - RAG_CHROMADB__PERSIST_DIRECTORY=/app/data/chromadb
+
+      # SQLite settings
+      - RAG_SQLITE__DATABASE_PATH=/app/data/rag.db
+
+      # API settings
+      - RAG_API_KEY=${RAG_API_KEY:-}
+      - RAG_LOG_LEVEL=${RAG_LOG_LEVEL:-INFO}
+    volumes:
+      - rag-data:/app/data
+      - ./config:/app/config:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================================
+  # Ollama - Local LLM Server
+  # =============================================================================
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=24h
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - local
+      - gpu
+
+  # Ollama without GPU (CPU-only)
+  ollama-cpu:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=24h
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    profiles:
+      - cpu
+
+  # =============================================================================
+  # ChromaDB - Local Vector Database
+  # =============================================================================
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - local
+      - hybrid
+
+  # =============================================================================
+  # Qdrant - Alternative Vector Database
+  # =============================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - qdrant
+
+  # =============================================================================
+  # Redis - Session Cache (Optional)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - cache
+
+  # =============================================================================
+  # Model Initializer - Pull Ollama models on startup
+  # =============================================================================
+  model-init:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - rag-network
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Pulling LLM model: ${OLLAMA_MODEL:-llama3.2}..."
+        curl -X POST http://ollama:11434/api/pull -d '{"name":"${OLLAMA_MODEL:-llama3.2}"}'
+        echo "Pulling embedding model: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}..."
+        curl -X POST http://ollama:11434/api/pull -d '{"name":"${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}"}'
+        echo "Models ready!"
+    profiles:
+      - init
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  rag-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  rag-data:
+    driver: local
+  ollama-models:
+    driver: local
+  chroma-data:
+    driver: local
+  qdrant-data:
+    driver: local
+  redis-data:
+    driver: local

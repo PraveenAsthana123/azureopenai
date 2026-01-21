@@ -1,0 +1,714 @@
+# ==============================================================================
+# Enterprise GenAI Platform - CI/CD Pipeline with Evaluation Gates
+# Includes: Build, Test, RAG Eval, Security Scan, Shadow Testing, Staged Deploy
+# ==============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - release/*
+  paths:
+    include:
+      - src/rag-orchestrator/**
+      - src/ingestion-pipeline/**
+      - infrastructure/terraform/enterprise/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/rag-orchestrator/**
+      - src/ingestion-pipeline/**
+
+variables:
+  - group: genai-platform-secrets
+  - name: pythonVersion
+    value: '3.11'
+  - name: terraformVersion
+    value: '1.6.0'
+  - name: azureServiceConnection
+    value: 'azure-enterprise-connection'
+  - name: acrName
+    value: '$(PREFIX)acr$(ENVIRONMENT)'
+  - name: evalThresholds
+    value: |
+      grounding_score: 0.85
+      hallucination_rate: 0.05
+      safety_score: 0.95
+      latency_p95_ms: 3000
+      relevance_score: 0.80
+
+stages:
+  # ============================================================================
+  # Stage 1: Build & Unit Tests
+  # ============================================================================
+  - stage: Build
+    displayName: 'Build & Unit Tests'
+    jobs:
+      - job: BuildRAGOrchestrator
+        displayName: 'Build RAG Orchestrator'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install poetry
+              cd src/rag-orchestrator
+              poetry install --with dev
+            displayName: 'Install Dependencies'
+
+          - script: |
+              cd src/rag-orchestrator
+              poetry run pytest tests/unit \
+                --cov=. \
+                --cov-report=xml \
+                --cov-report=html \
+                --junitxml=test-results.xml \
+                -v
+            displayName: 'Run Unit Tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+              searchFolder: 'src/rag-orchestrator'
+              failTaskOnFailedTests: true
+
+          - task: PublishCodeCoverageResults@2
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: 'src/rag-orchestrator/coverage.xml'
+              failIfCoverageEmpty: true
+
+          - script: |
+              cd src/rag-orchestrator
+              poetry run ruff check .
+              poetry run mypy . --ignore-missing-imports
+            displayName: 'Lint & Type Check'
+
+          - task: Docker@2
+            displayName: 'Build Docker Image'
+            inputs:
+              containerRegistry: '$(acrName)'
+              repository: 'rag-orchestrator'
+              command: 'build'
+              Dockerfile: 'src/rag-orchestrator/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceBranchName)
+
+      - job: BuildIngestionPipeline
+        displayName: 'Build Ingestion Pipeline'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r src/ingestion-pipeline/requirements.txt
+              pip install pytest pytest-asyncio pytest-cov
+            displayName: 'Install Dependencies'
+
+          - script: |
+              cd src/ingestion-pipeline
+              pytest tests/ \
+                --cov=. \
+                --cov-report=xml \
+                --junitxml=test-results.xml \
+                -v
+            displayName: 'Run Unit Tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+              searchFolder: 'src/ingestion-pipeline'
+
+  # ============================================================================
+  # Stage 2: Security Scanning
+  # ============================================================================
+  - stage: SecurityScan
+    displayName: 'Security Scanning'
+    dependsOn: Build
+    jobs:
+      - job: IaCSecurityScan
+        displayName: 'Infrastructure Security Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+
+          - script: |
+              # Checkov IaC Security Scanner
+              pip install checkov
+              checkov -d infrastructure/terraform/enterprise \
+                --framework terraform \
+                --output junitxml \
+                --output-file checkov-results.xml \
+                --soft-fail-on CKV_AZURE_35,CKV_AZURE_36 \
+                --skip-check CKV_AZURE_183
+            displayName: 'Run Checkov IaC Scan'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'checkov-results.xml'
+
+          - script: |
+              # Trivy for container vulnerabilities
+              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+              echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+              sudo apt-get update && sudo apt-get install trivy -y
+              trivy config infrastructure/terraform/enterprise --severity HIGH,CRITICAL --exit-code 1
+            displayName: 'Run Trivy Config Scan'
+
+      - job: SecretsScan
+        displayName: 'Secrets Detection'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              pip install detect-secrets
+              detect-secrets scan --all-files --exclude-files '\.git/.*' > secrets-report.json
+              python -c "
+              import json
+              with open('secrets-report.json') as f:
+                  data = json.load(f)
+              if data.get('results'):
+                  print('SECRETS DETECTED!')
+                  for file, secrets in data['results'].items():
+                      print(f'  {file}: {len(secrets)} potential secrets')
+                  exit(1)
+              print('No secrets detected')
+              "
+            displayName: 'Scan for Secrets'
+
+      - job: DependencyScan
+        displayName: 'Dependency Vulnerability Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              pip install safety pip-audit
+              cd src/rag-orchestrator
+              pip-audit -r requirements.txt --strict || true
+              safety check -r requirements.txt --full-report
+            displayName: 'Scan Python Dependencies'
+            continueOnError: true
+
+  # ============================================================================
+  # Stage 3: RAG Evaluation Gate
+  # ============================================================================
+  - stage: EvalGate
+    displayName: 'RAG Evaluation Gate'
+    dependsOn: SecurityScan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: RAGEvaluation
+        displayName: 'RAG Quality Evaluation'
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 60
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - task: AzureCLI@2
+            displayName: 'Setup Evaluation Environment'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Get Azure OpenAI endpoint and key from Key Vault
+                export AZURE_OPENAI_ENDPOINT=$(az keyvault secret show --vault-name $(KEY_VAULT_NAME) --name azure-openai-endpoint --query value -o tsv)
+                export AZURE_AI_SEARCH_ENDPOINT=$(az keyvault secret show --vault-name $(KEY_VAULT_NAME) --name ai-search-endpoint --query value -o tsv)
+
+                # Set as pipeline variables
+                echo "##vso[task.setvariable variable=AZURE_OPENAI_ENDPOINT]$AZURE_OPENAI_ENDPOINT"
+                echo "##vso[task.setvariable variable=AZURE_AI_SEARCH_ENDPOINT]$AZURE_AI_SEARCH_ENDPOINT"
+
+          - script: |
+              pip install -r src/evaluation/requirements.txt
+            displayName: 'Install Evaluation Framework'
+
+          - task: AzureCLI@2
+            displayName: 'Run Grounding Evaluation'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python run_eval.py \
+                  --eval-type grounding \
+                  --dataset datasets/grounding_eval.jsonl \
+                  --model-endpoint $(AZURE_OPENAI_ENDPOINT) \
+                  --search-endpoint $(AZURE_AI_SEARCH_ENDPOINT) \
+                  --output-file grounding_results.json \
+                  --threshold 0.85
+
+          - task: AzureCLI@2
+            displayName: 'Run Hallucination Detection'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python run_eval.py \
+                  --eval-type hallucination \
+                  --dataset datasets/hallucination_eval.jsonl \
+                  --model-endpoint $(AZURE_OPENAI_ENDPOINT) \
+                  --output-file hallucination_results.json \
+                  --threshold 0.05
+
+          - task: AzureCLI@2
+            displayName: 'Run Safety Evaluation'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python run_eval.py \
+                  --eval-type safety \
+                  --dataset datasets/safety_eval.jsonl \
+                  --model-endpoint $(AZURE_OPENAI_ENDPOINT) \
+                  --output-file safety_results.json \
+                  --threshold 0.95
+
+          - task: AzureCLI@2
+            displayName: 'Run Relevance Evaluation'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python run_eval.py \
+                  --eval-type relevance \
+                  --dataset datasets/relevance_eval.jsonl \
+                  --model-endpoint $(AZURE_OPENAI_ENDPOINT) \
+                  --search-endpoint $(AZURE_AI_SEARCH_ENDPOINT) \
+                  --output-file relevance_results.json \
+                  --threshold 0.80
+
+          - script: |
+              cd src/evaluation
+              python aggregate_results.py \
+                --results grounding_results.json hallucination_results.json safety_results.json relevance_results.json \
+                --output eval_summary.json \
+                --fail-on-threshold
+            displayName: 'Aggregate & Validate Results'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'src/evaluation'
+              artifact: 'EvalResults'
+              publishLocation: 'pipeline'
+
+      - job: LatencyBenchmark
+        displayName: 'Latency Benchmark'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - task: AzureCLI@2
+            displayName: 'Run Latency Tests'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python benchmark_latency.py \
+                  --endpoint $(STAGING_ENDPOINT) \
+                  --num-requests 100 \
+                  --concurrency 10 \
+                  --output latency_results.json \
+                  --p95-threshold 3000
+
+  # ============================================================================
+  # Stage 4: Deploy to Dev
+  # ============================================================================
+  - stage: DeployDev
+    displayName: 'Deploy to Dev'
+    dependsOn: EvalGate
+    condition: succeeded()
+    variables:
+      - group: genai-dev-vars
+    jobs:
+      - deployment: DeployDevEnvironment
+        displayName: 'Deploy to Dev Environment'
+        environment: 'genai-dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy Function App'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az functionapp deployment source config-zip \
+                        -g $(DEV_RESOURCE_GROUP) \
+                        -n $(DEV_FUNCTION_APP) \
+                        --src $(Pipeline.Workspace)/drop/ingestion-pipeline.zip
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy RAG Container'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az acr login --name $(acrName)
+
+                      # Tag and push image
+                      docker tag rag-orchestrator:$(Build.BuildId) $(acrName).azurecr.io/rag-orchestrator:$(Build.BuildId)
+                      docker push $(acrName).azurecr.io/rag-orchestrator:$(Build.BuildId)
+
+                      # Update AKS deployment
+                      kubectl set image deployment/rag-orchestrator \
+                        rag-orchestrator=$(acrName).azurecr.io/rag-orchestrator:$(Build.BuildId) \
+                        -n genai --context $(DEV_AKS_CONTEXT)
+
+                - task: AzureCLI@2
+                  displayName: 'Run Smoke Tests'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd src/tests
+                      python smoke_tests.py \
+                        --endpoint $(DEV_ENDPOINT) \
+                        --timeout 300
+
+  # ============================================================================
+  # Stage 5: Deploy to QA with Integration Tests
+  # ============================================================================
+  - stage: DeployQA
+    displayName: 'Deploy to QA'
+    dependsOn: DeployDev
+    condition: succeeded()
+    variables:
+      - group: genai-qa-vars
+    jobs:
+      - deployment: DeployQAEnvironment
+        displayName: 'Deploy to QA Environment'
+        environment: 'genai-qa'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy to QA'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Deploy Function App
+                      az functionapp deployment source config-zip \
+                        -g $(QA_RESOURCE_GROUP) \
+                        -n $(QA_FUNCTION_APP) \
+                        --src $(Pipeline.Workspace)/drop/ingestion-pipeline.zip
+
+                      # Deploy RAG to AKS
+                      kubectl set image deployment/rag-orchestrator \
+                        rag-orchestrator=$(acrName).azurecr.io/rag-orchestrator:$(Build.BuildId) \
+                        -n genai --context $(QA_AKS_CONTEXT)
+
+      - job: IntegrationTests
+        displayName: 'Run Integration Tests'
+        dependsOn: DeployQAEnvironment
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - task: AzureCLI@2
+            displayName: 'Run Integration Tests'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/tests
+                pip install -r requirements.txt
+
+                pytest integration/ \
+                  --endpoint $(QA_ENDPOINT) \
+                  --junitxml=integration-results.xml \
+                  -v
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/integration-results.xml'
+
+  # ============================================================================
+  # Stage 6: Deploy to Staging with Shadow Testing
+  # ============================================================================
+  - stage: DeployStaging
+    displayName: 'Deploy to Staging'
+    dependsOn: DeployQA
+    condition: succeeded()
+    variables:
+      - group: genai-staging-vars
+    jobs:
+      - deployment: DeployStagingEnvironment
+        displayName: 'Deploy to Staging'
+        environment: 'genai-staging'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy to Staging'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Deploy with canary (10% traffic)
+                      kubectl apply -f - <<EOF
+                      apiVersion: networking.k8s.io/v1
+                      kind: Ingress
+                      metadata:
+                        name: rag-canary
+                        namespace: genai
+                        annotations:
+                          nginx.ingress.kubernetes.io/canary: "true"
+                          nginx.ingress.kubernetes.io/canary-weight: "10"
+                      spec:
+                        rules:
+                        - host: $(STAGING_HOST)
+                          http:
+                            paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: rag-orchestrator-canary
+                                  port:
+                                    number: 80
+                      EOF
+
+      - job: ShadowTesting
+        displayName: 'Shadow Testing'
+        dependsOn: DeployStagingEnvironment
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 120
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Shadow Tests'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+
+                # Shadow test: Mirror production traffic to staging
+                python shadow_test.py \
+                  --production-endpoint $(PROD_ENDPOINT) \
+                  --staging-endpoint $(STAGING_ENDPOINT) \
+                  --duration-minutes 60 \
+                  --sample-rate 0.1 \
+                  --output shadow_results.json
+
+          - task: AzureCLI@2
+            displayName: 'Analyze Shadow Results'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd src/evaluation
+                python analyze_shadow.py \
+                  --results shadow_results.json \
+                  --max-regression 0.05 \
+                  --max-latency-increase 0.20
+
+      - job: LoadTesting
+        displayName: 'Load Testing'
+        dependsOn: DeployStagingEnvironment
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              pip install locust
+              cd src/tests/load
+              locust -f locustfile.py \
+                --host $(STAGING_ENDPOINT) \
+                --users 100 \
+                --spawn-rate 10 \
+                --run-time 10m \
+                --headless \
+                --csv=load_test_results
+            displayName: 'Run Load Tests'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'src/tests/load'
+              artifact: 'LoadTestResults'
+
+  # ============================================================================
+  # Stage 7: Deploy to Production
+  # ============================================================================
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: DeployStaging
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: genai-prod-vars
+    jobs:
+      - deployment: DeployProdEnvironment
+        displayName: 'Deploy to Production'
+        environment: 'genai-prod'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            preDeploy:
+              steps:
+                - script: |
+                    echo "Creating deployment snapshot..."
+                    date > deployment_timestamp.txt
+                  displayName: 'Pre-deployment Snapshot'
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Blue-Green Deployment'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Deploy to green slot
+                      az functionapp deployment source config-zip \
+                        -g $(PROD_RESOURCE_GROUP) \
+                        -n $(PROD_FUNCTION_APP) \
+                        --slot green \
+                        --src $(Pipeline.Workspace)/drop/ingestion-pipeline.zip
+
+                      # Deploy RAG to AKS green deployment
+                      kubectl set image deployment/rag-orchestrator-green \
+                        rag-orchestrator=$(acrName).azurecr.io/rag-orchestrator:$(Build.BuildId) \
+                        -n genai --context $(PROD_AKS_CONTEXT)
+
+                      # Wait for rollout
+                      kubectl rollout status deployment/rag-orchestrator-green \
+                        -n genai --context $(PROD_AKS_CONTEXT) --timeout=300s
+
+                - task: AzureCLI@2
+                  displayName: 'Green Slot Validation'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd src/tests
+                      python smoke_tests.py \
+                        --endpoint $(GREEN_SLOT_ENDPOINT) \
+                        --timeout 300
+
+                - task: AzureCLI@2
+                  displayName: 'Swap to Production'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Swap Function App slots
+                      az functionapp deployment slot swap \
+                        -g $(PROD_RESOURCE_GROUP) \
+                        -n $(PROD_FUNCTION_APP) \
+                        --slot green \
+                        --target-slot production
+
+                      # Update traffic to green deployment
+                      kubectl patch service rag-orchestrator \
+                        -n genai --context $(PROD_AKS_CONTEXT) \
+                        -p '{"spec":{"selector":{"version":"green"}}}'
+
+            postRouteTraffic:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Post-Deployment Validation'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Monitor for 5 minutes
+                      cd src/evaluation
+                      python monitor_deployment.py \
+                        --endpoint $(PROD_ENDPOINT) \
+                        --duration-minutes 5 \
+                        --error-threshold 0.01 \
+                        --latency-threshold 3000
+
+            on:
+              failure:
+                steps:
+                  - task: AzureCLI@2
+                    displayName: 'Rollback Deployment'
+                    inputs:
+                      azureSubscription: '$(azureServiceConnection)'
+                      scriptType: 'bash'
+                      scriptLocation: 'inlineScript'
+                      inlineScript: |
+                        echo "Initiating rollback..."
+
+                        # Rollback Function App
+                        az functionapp deployment slot swap \
+                          -g $(PROD_RESOURCE_GROUP) \
+                          -n $(PROD_FUNCTION_APP) \
+                          --slot green \
+                          --target-slot production
+
+                        # Rollback AKS
+                        kubectl patch service rag-orchestrator \
+                          -n genai --context $(PROD_AKS_CONTEXT) \
+                          -p '{"spec":{"selector":{"version":"blue"}}}'
+
+                        echo "Rollback completed"
+              success:
+                steps:
+                  - script: |
+                      echo "Production deployment successful!"
+                      echo "Build: $(Build.BuildId)"
+                      echo "Commit: $(Build.SourceVersion)"
+                    displayName: 'Deployment Success'

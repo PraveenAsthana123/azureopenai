@@ -1,0 +1,223 @@
+# Azure DevOps Pipeline for Frontend Deployment
+# Builds and deploys React frontend to Azure VMs
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - frontend/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - frontend/**
+
+variables:
+  - group: genai-copilot-vars
+  - name: nodeVersion
+    value: '20.x'
+  - name: frontendPath
+    value: 'frontend'
+
+stages:
+  # Build Stage
+  - stage: Build
+    displayName: 'Build Frontend'
+    jobs:
+      - job: Build
+        displayName: 'Build and Test'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: NodeTool@0
+            displayName: 'Use Node.js $(nodeVersion)'
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: |
+              cd $(frontendPath)
+              npm ci
+            displayName: 'Install Dependencies'
+
+          - script: |
+              cd $(frontendPath)
+              npm run lint
+            displayName: 'Run Lint'
+            continueOnError: true
+
+          - script: |
+              cd $(frontendPath)
+              npm run test -- --run --reporter=junit --outputFile=test-results.xml || true
+            displayName: 'Run Tests'
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+            condition: always()
+
+          - script: |
+              cd $(frontendPath)
+              npm run build
+            displayName: 'Build Production'
+            env:
+              VITE_API_BASE_URL: $(API_BASE_URL)
+              VITE_AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              VITE_AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+
+          - task: ArchiveFiles@2
+            displayName: 'Archive Build'
+            inputs:
+              rootFolderOrFile: '$(frontendPath)/dist'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/frontend.zip'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/frontend.zip'
+              artifact: 'frontend'
+
+  # Deploy to Dev
+  - stage: DeployDev
+    displayName: 'Deploy to Dev'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployToVM
+        displayName: 'Deploy to VM'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'frontend'
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy via Bastion'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Get VM details
+                      RESOURCE_GROUP=$(RG_NAME_DEV)
+                      VM_NAME=$(az vm list -g $RESOURCE_GROUP --query "[0].name" -o tsv)
+
+                      # Deploy using Azure VM Run Command
+                      az vm run-command invoke \
+                        --resource-group $RESOURCE_GROUP \
+                        --name $VM_NAME \
+                        --command-id RunShellScript \
+                        --scripts "
+                          sudo rm -rf /opt/genai-copilot/frontend/*
+                          sudo mkdir -p /opt/genai-copilot/frontend
+                        "
+
+                      # Upload artifact using storage account
+                      STORAGE_ACCOUNT=$(DEPLOY_STORAGE_ACCOUNT)
+                      az storage blob upload \
+                        --account-name $STORAGE_ACCOUNT \
+                        --container-name deployments \
+                        --name frontend-dev.zip \
+                        --file $(Pipeline.Workspace)/frontend/frontend.zip \
+                        --overwrite
+
+                      # Download and extract on VM
+                      SAS_TOKEN=$(az storage blob generate-sas \
+                        --account-name $STORAGE_ACCOUNT \
+                        --container-name deployments \
+                        --name frontend-dev.zip \
+                        --permissions r \
+                        --expiry $(date -u -d "+1 hour" +%Y-%m-%dT%H:%MZ) \
+                        -o tsv)
+
+                      BLOB_URL="https://${STORAGE_ACCOUNT}.blob.core.windows.net/deployments/frontend-dev.zip?${SAS_TOKEN}"
+
+                      az vm run-command invoke \
+                        --resource-group $RESOURCE_GROUP \
+                        --name $VM_NAME \
+                        --command-id RunShellScript \
+                        --scripts "
+                          cd /tmp
+                          wget -O frontend.zip '${BLOB_URL}'
+                          sudo unzip -o frontend.zip -d /opt/genai-copilot/frontend/
+                          sudo chown -R www-data:www-data /opt/genai-copilot/frontend
+                          sudo systemctl reload nginx
+                        "
+
+  # Deploy to Prod
+  - stage: DeployProd
+    displayName: 'Deploy to Prod'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployToVM
+        displayName: 'Deploy to VM'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'frontend'
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy to Prod VMs'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      RESOURCE_GROUP=$(RG_NAME_PROD)
+                      STORAGE_ACCOUNT=$(DEPLOY_STORAGE_ACCOUNT)
+
+                      # Upload artifact
+                      az storage blob upload \
+                        --account-name $STORAGE_ACCOUNT \
+                        --container-name deployments \
+                        --name frontend-prod.zip \
+                        --file $(Pipeline.Workspace)/frontend/frontend.zip \
+                        --overwrite
+
+                      SAS_TOKEN=$(az storage blob generate-sas \
+                        --account-name $STORAGE_ACCOUNT \
+                        --container-name deployments \
+                        --name frontend-prod.zip \
+                        --permissions r \
+                        --expiry $(date -u -d "+1 hour" +%Y-%m-%dT%H:%MZ) \
+                        -o tsv)
+
+                      BLOB_URL="https://${STORAGE_ACCOUNT}.blob.core.windows.net/deployments/frontend-prod.zip?${SAS_TOKEN}"
+
+                      # Deploy to all VMs
+                      VM_NAMES=$(az vm list -g $RESOURCE_GROUP --query "[].name" -o tsv)
+                      for VM_NAME in $VM_NAMES; do
+                        echo "Deploying to $VM_NAME..."
+                        az vm run-command invoke \
+                          --resource-group $RESOURCE_GROUP \
+                          --name $VM_NAME \
+                          --command-id RunShellScript \
+                          --scripts "
+                            cd /tmp
+                            wget -O frontend.zip '${BLOB_URL}'
+                            sudo rm -rf /opt/genai-copilot/frontend/*
+                            sudo unzip -o frontend.zip -d /opt/genai-copilot/frontend/
+                            sudo chown -R www-data:www-data /opt/genai-copilot/frontend
+                            sudo systemctl reload nginx
+                          "
+                      done

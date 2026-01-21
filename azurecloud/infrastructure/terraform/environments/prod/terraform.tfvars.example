@@ -1,0 +1,45 @@
+# =============================================================================
+# RAG Platform - Production Terraform Variables
+# =============================================================================
+# Copy this file to terraform.tfvars and configure for your environment
+# DO NOT commit terraform.tfvars to version control (contains secrets)
+
+# =============================================================================
+# Basic Configuration
+# =============================================================================
+
+project_name = "rag"
+environment  = "prod"
+location     = "eastus2"
+location_secondary = "westus2"
+
+tags = {
+  CostCenter  = "AI-Platform"
+  Owner       = "your-email@company.com"
+  Application = "RAG Platform"
+}
+
+# =============================================================================
+# Claude Model Deployment
+# =============================================================================
+# Set to true if Claude is available in your Azure region via AI Foundry
+# Check: https://learn.microsoft.com/azure/ai-studio/how-to/model-catalog
+
+deploy_claude   = false
+claude_model_id = "azureml://registries/azureml/models/Anthropic-Claude-3-5-Sonnet/versions/1"
+
+# =============================================================================
+# Feature Flags
+# =============================================================================
+
+# Enable private endpoints (recommended for production)
+enable_private_endpoints = true
+
+# Enable zone redundancy for high availability
+enable_zone_redundancy = true
+
+# =============================================================================
+# Alert Configuration
+# =============================================================================
+# Uncomment and add email addresses for alerts
+# alert_email_addresses = ["ops@company.com", "oncall@company.com"]

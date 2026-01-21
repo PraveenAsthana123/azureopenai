@@ -1,0 +1,448 @@
+{
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json",
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# RAG MLOps Observability Dashboard\n\nComprehensive monitoring for Enterprise RAG Platform including latency, cost, quality, and drift detection."
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000, "displayText": "Last hour" },
+                { "durationMs": 14400000, "displayText": "Last 4 hours" },
+                { "durationMs": 86400000, "displayText": "Last 24 hours" },
+                { "durationMs": 604800000, "displayText": "Last 7 days" },
+                { "durationMs": 2592000000, "displayText": "Last 30 days" }
+              ]
+            }
+          },
+          {
+            "id": "tenant",
+            "version": "KqlParameterItem/1.0",
+            "name": "Tenant",
+            "type": 2,
+            "isRequired": false,
+            "query": "traces | where customDimensions.tenant_id != '' | distinct tostring(customDimensions.tenant_id) | order by Column1 asc",
+            "value": null,
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"]
+            }
+          }
+        ]
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 11,
+      "content": {
+        "version": "LinkItem/1.0",
+        "style": "tabs",
+        "links": [
+          { "id": "overview", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Overview", "subTarget": "overview" },
+          { "id": "latency", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Latency", "subTarget": "latency" },
+          { "id": "cost", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Cost & Tokens", "subTarget": "cost" },
+          { "id": "quality", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Quality", "subTarget": "quality" },
+          { "id": "feedback", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Feedback", "subTarget": "feedback" },
+          { "id": "safety", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Safety", "subTarget": "safety" },
+          { "id": "drift", "cellValue": "tab", "linkTarget": "parameter", "linkLabel": "Drift", "subTarget": "drift" }
+        ]
+      },
+      "name": "tabs"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| where url contains '/chat' or url contains '/query'\n| summarize\n    total_requests = count(),\n    success_rate = round(countif(success == true) * 100.0 / count(), 1),\n    p95_latency = round(percentile(duration, 95), 0),\n    error_count = countif(success == false)",
+              "size": 4,
+              "title": "Summary Metrics",
+              "queryType": 0,
+              "visualization": "tiles",
+              "tileSettings": {
+                "titleContent": { "columnMatch": "Column1" },
+                "leftContent": { "columnMatch": "total_requests", "formatter": 12 }
+              }
+            },
+            "name": "summary-tiles"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| where url contains '/chat'\n| summarize\n    p50 = percentile(duration, 50),\n    p95 = percentile(duration, 95),\n    p99 = percentile(duration, 99)\n  by bin(timestamp, 5m)\n| render timechart",
+              "size": 0,
+              "title": "Request Latency (P50, P95, P99)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "latency-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| summarize\n    success = countif(success == true),\n    failed = countif(success == false)\n  by bin(timestamp, 5m)\n| render timechart",
+              "size": 0,
+              "title": "Request Success/Failure",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "success-chart"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "overview"
+      },
+      "name": "overview-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step in ('hybrid_search', 'openai_completion', 'embedding', 'rerank')\n| extend\n    step = tostring(customDimensions.step),\n    latency_ms = toint(customDimensions.latency_ms)\n| summarize\n    avg_latency = avg(latency_ms),\n    p95 = percentile(latency_ms, 95)\n  by step, bin(timestamp, 5m)\n| render timechart",
+              "size": 0,
+              "title": "Component Latency Breakdown",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "component-latency"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step in ('hybrid_search', 'openai_completion', 'embedding')\n| extend\n    step = tostring(customDimensions.step),\n    latency_ms = toint(customDimensions.latency_ms)\n| summarize\n    avg_latency = round(avg(latency_ms), 0),\n    p50 = round(percentile(latency_ms, 50), 0),\n    p95 = round(percentile(latency_ms, 95), 0),\n    p99 = round(percentile(latency_ms, 99), 0),\n    count = count()\n  by step\n| order by avg_latency desc",
+              "size": 0,
+              "title": "Latency Statistics by Component",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "latency-table"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "requests\n| where url contains '/chat'\n| where duration > 5000\n| project timestamp, duration, customDimensions.user_id, customDimensions.session_id\n| order by duration desc\n| take 20",
+              "size": 0,
+              "title": "Slow Queries (> 5s)",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "slow-queries"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "latency"
+      },
+      "name": "latency-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'openai_completion'\n| extend\n    prompt_tokens = toint(customDimensions.prompt_tokens),\n    completion_tokens = toint(customDimensions.completion_tokens)\n| summarize\n    total_prompt = sum(prompt_tokens),\n    total_completion = sum(completion_tokens)\n  by bin(timestamp, 1h)\n| extend\n    cost_usd = round((total_prompt / 1000000.0 * 2.5) + (total_completion / 1000000.0 * 10.0), 2)\n| render timechart",
+              "size": 0,
+              "title": "Hourly Cost Estimate (USD)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "hourly-cost"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'openai_completion'\n| extend\n    model = tostring(customDimensions.model),\n    tokens = toint(customDimensions.prompt_tokens) + toint(customDimensions.completion_tokens)\n| summarize total_tokens = sum(tokens) by model, bin(timestamp, 1h)\n| render timechart",
+              "size": 0,
+              "title": "Token Usage by Model",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "token-usage"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'openai_completion'\n| extend\n    tenant_id = tostring(customDimensions.tenant_id),\n    prompt_tokens = toint(customDimensions.prompt_tokens),\n    completion_tokens = toint(customDimensions.completion_tokens)\n| summarize\n    total_tokens = sum(prompt_tokens) + sum(completion_tokens),\n    requests = count(),\n    cost_usd = round(sum(prompt_tokens / 1000000.0 * 2.5 + completion_tokens / 1000000.0 * 10.0), 2)\n  by tenant_id\n| order by cost_usd desc",
+              "size": 0,
+              "title": "Cost by Tenant (Chargeback)",
+              "queryType": 0,
+              "visualization": "table"
+            },
+            "name": "tenant-cost"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "cost"
+      },
+      "name": "cost-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'online_eval_summary'\n| extend\n    groundedness = todouble(customDimensions.groundedness_avg),\n    relevance = todouble(customDimensions.relevance_avg),\n    citation = todouble(customDimensions.citation_accuracy_avg),\n    overall = todouble(customDimensions.overall_avg)\n| summarize\n    avg(groundedness),\n    avg(relevance),\n    avg(citation),\n    avg(overall)\n  by bin(timestamp, 1d)\n| render timechart",
+              "size": 0,
+              "title": "RAG Quality Metrics (Daily)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "quality-metrics"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'online_eval_result'\n| extend groundedness = todouble(customDimensions.groundedness)\n| summarize\n    low = countif(groundedness < 0.7),\n    medium = countif(groundedness >= 0.7 and groundedness < 0.9),\n    high = countif(groundedness >= 0.9)\n  by bin(timestamp, 1d)\n| render columnchart",
+              "size": 0,
+              "title": "Groundedness Distribution (Hallucination Proxy)",
+              "queryType": 0,
+              "visualization": "columnchart"
+            },
+            "customWidth": "50",
+            "name": "groundedness-dist"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'hybrid_search'\n| extend\n    top_score = todouble(customDimensions.top_score),\n    result_count = toint(customDimensions.result_count)\n| summarize\n    avg_score = avg(top_score),\n    no_result_rate = countif(result_count == 0) * 100.0 / count()\n  by bin(timestamp, 1h)\n| render timechart",
+              "size": 0,
+              "title": "Retrieval Quality",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "retrieval-quality"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "quality"
+      },
+      "name": "quality-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'user_feedback'\n| extend rating = tostring(customDimensions.rating)\n| summarize\n    up = countif(rating == 'up'),\n    down = countif(rating == 'down')\n  by bin(timestamp, 1d)\n| render barchart",
+              "size": 0,
+              "title": "User Feedback (Thumbs Up/Down)",
+              "queryType": 0,
+              "visualization": "barchart"
+            },
+            "customWidth": "50",
+            "name": "feedback-chart"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'user_feedback'\n| extend rating = tostring(customDimensions.rating)\n| summarize\n    up = countif(rating == 'up'),\n    down = countif(rating == 'down')\n  by bin(timestamp, 1d)\n| extend satisfaction = round(todouble(up) / (up + down) * 100, 1)\n| render timechart",
+              "size": 0,
+              "title": "User Satisfaction Rate (%)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "satisfaction-rate"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'user_feedback'\n| where customDimensions.rating == 'down'\n| extend reason = tostring(customDimensions.reason)\n| summarize count() by reason\n| order by count_ desc",
+              "size": 0,
+              "title": "Negative Feedback Reasons",
+              "queryType": 0,
+              "visualization": "piechart"
+            },
+            "name": "feedback-reasons"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "feedback"
+      },
+      "name": "feedback-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'safety_violation'\n| extend\n    violation_type = tostring(customDimensions.violation_type),\n    severity = tostring(customDimensions.severity)\n| summarize count() by violation_type, severity, bin(timestamp, 1d)\n| render columnchart",
+              "size": 0,
+              "title": "Safety Violations by Type",
+              "queryType": 0,
+              "visualization": "columnchart"
+            },
+            "customWidth": "50",
+            "name": "safety-violations"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'prompt_injection_detected'\n| summarize\n    attempts = count(),\n    unique_users = dcount(tostring(customDimensions.user_id))\n  by bin(timestamp, 1h)\n| render timechart",
+              "size": 0,
+              "title": "Prompt Injection Attempts",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "injection-attempts"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'pii_detected'\n| extend pii_type = tostring(customDimensions.pii_type)\n| summarize count() by pii_type, bin(timestamp, 1d)\n| render columnchart",
+              "size": 0,
+              "title": "PII Detection Events",
+              "queryType": 0,
+              "visualization": "columnchart"
+            },
+            "name": "pii-events"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "safety"
+      },
+      "name": "safety-group"
+    },
+    {
+      "type": 12,
+      "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'hybrid_search'\n| extend score = todouble(customDimensions.top_score)\n| summarize\n    daily_avg = avg(score),\n    daily_p95 = percentile(score, 95)\n  by bin(timestamp, 1d)\n| order by timestamp asc\n| serialize\n| extend\n    prev_avg = prev(daily_avg, 1),\n    change_pct = round((daily_avg - prev(daily_avg, 1)) / prev(daily_avg, 1) * 100, 1)\n| render timechart",
+              "size": 0,
+              "title": "Retrieval Score Drift",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "customWidth": "50",
+            "name": "retrieval-drift"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.step == 'intent_classification'\n| extend intent = tostring(customDimensions.intent)\n| summarize count() by intent, bin(timestamp, 1d)\n| render areachart",
+              "size": 0,
+              "title": "Query Intent Distribution Over Time",
+              "queryType": 0,
+              "visualization": "areachart"
+            },
+            "customWidth": "50",
+            "name": "intent-drift"
+          },
+          {
+            "type": 3,
+            "content": {
+              "version": "KqlItem/1.0",
+              "query": "traces\n| where customDimensions.event == 'online_eval_summary'\n| extend\n    groundedness = todouble(customDimensions.groundedness_avg),\n    overall = todouble(customDimensions.overall_avg)\n| summarize\n    daily_groundedness = avg(groundedness),\n    daily_overall = avg(overall)\n  by bin(timestamp, 1d)\n| order by timestamp asc\n| serialize\n| extend\n    groundedness_change = round((daily_groundedness - prev(daily_groundedness, 7)) / prev(daily_groundedness, 7) * 100, 1),\n    overall_change = round((daily_overall - prev(daily_overall, 7)) / prev(daily_overall, 7) * 100, 1)\n| project timestamp, groundedness_change, overall_change\n| where isnotnull(groundedness_change)\n| render timechart",
+              "size": 0,
+              "title": "Quality Drift (Week-over-Week Change %)",
+              "queryType": 0,
+              "visualization": "timechart"
+            },
+            "name": "quality-drift"
+          }
+        ]
+      },
+      "conditionalVisibility": {
+        "parameterName": "tab",
+        "comparison": "isEqualTo",
+        "value": "drift"
+      },
+      "name": "drift-group"
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/{subscription-id}/resourcegroups/{resource-group}/providers/microsoft.insights/components/{app-insights-name}"
+  ],
+  "styleSettings": {},
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

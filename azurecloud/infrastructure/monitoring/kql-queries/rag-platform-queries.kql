@@ -1,0 +1,478 @@
+// ============================================================================
+// KQL Queries for RAG Platform Monitoring
+// ============================================================================
+//
+// These queries are designed for Azure Log Analytics / Application Insights
+// to monitor the enterprise RAG platform.
+//
+// ============================================================================
+
+// ============================================================================
+// 1. RETRIEVAL METRICS
+// ============================================================================
+
+// Query: Retrieval Performance Overview (Last 24 hours)
+// Shows average latency, success rate, and volume
+requests
+| where timestamp > ago(24h)
+| where name contains "retrieve" or name contains "search"
+| summarize
+    TotalRequests = count(),
+    SuccessRate = round(100.0 * countif(success == true) / count(), 2),
+    AvgLatencyMs = round(avg(duration), 2),
+    P50Latency = round(percentile(duration, 50), 2),
+    P95Latency = round(percentile(duration, 95), 2),
+    P99Latency = round(percentile(duration, 99), 2)
+| project TotalRequests, SuccessRate, AvgLatencyMs, P50Latency, P95Latency, P99Latency
+
+// Query: Retrieval Latency Trend (Hourly)
+requests
+| where timestamp > ago(7d)
+| where name contains "retrieve"
+| summarize
+    AvgLatency = avg(duration),
+    P95Latency = percentile(duration, 95),
+    RequestCount = count()
+    by bin(timestamp, 1h)
+| order by timestamp asc
+| render timechart
+
+// Query: Empty Retrieval Rate (No Results)
+customEvents
+| where timestamp > ago(24h)
+| where name == "RetrievalCompleted"
+| extend ChunksRetrieved = toint(customDimensions.chunks_count)
+| summarize
+    TotalQueries = count(),
+    EmptyResults = countif(ChunksRetrieved == 0),
+    EmptyRate = round(100.0 * countif(ChunksRetrieved == 0) / count(), 2)
+| project TotalQueries, EmptyResults, EmptyRate
+
+// Query: Retrieval by Intent Type
+customEvents
+| where timestamp > ago(24h)
+| where name == "RetrievalCompleted"
+| extend Intent = tostring(customDimensions.intent)
+| summarize
+    Count = count(),
+    AvgChunks = round(avg(toint(customDimensions.chunks_count)), 2),
+    AvgLatency = round(avg(todouble(customDimensions.latency_ms)), 2)
+    by Intent
+| order by Count desc
+
+// Query: Hybrid Search Component Breakdown
+customEvents
+| where timestamp > ago(24h)
+| where name == "HybridSearchExecuted"
+| summarize
+    AvgVectorLatency = round(avg(todouble(customDimensions.vector_latency_ms)), 2),
+    AvgBM25Latency = round(avg(todouble(customDimensions.bm25_latency_ms)), 2),
+    AvgFusionLatency = round(avg(todouble(customDimensions.fusion_latency_ms)), 2),
+    AvgTotalLatency = round(avg(todouble(customDimensions.total_latency_ms)), 2)
+
+// ============================================================================
+// 2. RERANKING METRICS
+// ============================================================================
+
+// Query: Reranker Performance
+customEvents
+| where timestamp > ago(24h)
+| where name == "RerankCompleted"
+| summarize
+    TotalReranks = count(),
+    AvgLatency = round(avg(todouble(customDimensions.latency_ms)), 2),
+    AvgChunksReranked = round(avg(toint(customDimensions.chunks_input)), 2),
+    AvgChunksOutput = round(avg(toint(customDimensions.chunks_output)), 2)
+
+// Query: Reranker Strategy Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "RerankCompleted"
+| extend Strategy = tostring(customDimensions.strategy)
+| summarize Count = count() by Strategy
+| render piechart
+
+// Query: Chunks Filtered by Reranker
+customEvents
+| where timestamp > ago(24h)
+| where name == "RerankCompleted"
+| extend
+    ChunksIn = toint(customDimensions.chunks_input),
+    ChunksOut = toint(customDimensions.chunks_output)
+| summarize
+    TotalIn = sum(ChunksIn),
+    TotalOut = sum(ChunksOut),
+    FilterRate = round(100.0 * (sum(ChunksIn) - sum(ChunksOut)) / sum(ChunksIn), 2)
+
+// ============================================================================
+// 3. LLM USAGE & COSTS
+// ============================================================================
+
+// Query: Token Usage by Model
+customEvents
+| where timestamp > ago(24h)
+| where name == "LLMCompletion"
+| extend
+    Model = tostring(customDimensions.model),
+    InputTokens = toint(customDimensions.input_tokens),
+    OutputTokens = toint(customDimensions.output_tokens)
+| summarize
+    Calls = count(),
+    TotalInputTokens = sum(InputTokens),
+    TotalOutputTokens = sum(OutputTokens),
+    AvgInputTokens = round(avg(InputTokens), 0),
+    AvgOutputTokens = round(avg(OutputTokens), 0)
+    by Model
+| order by TotalInputTokens desc
+
+// Query: Estimated Cost (Last 24 hours)
+// Note: Update pricing as needed
+customEvents
+| where timestamp > ago(24h)
+| where name == "LLMCompletion"
+| extend
+    Model = tostring(customDimensions.model),
+    InputTokens = toint(customDimensions.input_tokens),
+    OutputTokens = toint(customDimensions.output_tokens)
+| extend
+    InputCost = case(
+        Model == "gpt-4o", InputTokens * 0.0025 / 1000,
+        Model == "gpt-4o-mini", InputTokens * 0.00015 / 1000,
+        Model == "text-embedding-3-large", InputTokens * 0.00013 / 1000,
+        0.0
+    ),
+    OutputCost = case(
+        Model == "gpt-4o", OutputTokens * 0.01 / 1000,
+        Model == "gpt-4o-mini", OutputTokens * 0.0006 / 1000,
+        0.0
+    )
+| summarize
+    TotalInputCost = round(sum(InputCost), 4),
+    TotalOutputCost = round(sum(OutputCost), 4),
+    TotalCost = round(sum(InputCost) + sum(OutputCost), 4)
+    by Model
+
+// Query: Cost Trend (Daily)
+customEvents
+| where timestamp > ago(30d)
+| where name == "LLMCompletion"
+| extend
+    Model = tostring(customDimensions.model),
+    InputTokens = toint(customDimensions.input_tokens),
+    OutputTokens = toint(customDimensions.output_tokens)
+| extend
+    Cost = case(
+        Model == "gpt-4o", (InputTokens * 0.0025 + OutputTokens * 0.01) / 1000,
+        Model == "gpt-4o-mini", (InputTokens * 0.00015 + OutputTokens * 0.0006) / 1000,
+        0.0
+    )
+| summarize DailyCost = round(sum(Cost), 2) by bin(timestamp, 1d)
+| order by timestamp asc
+| render columnchart
+
+// ============================================================================
+// 4. RAG QUALITY METRICS
+// ============================================================================
+
+// Query: Groundedness Score Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "RAGResponse"
+| extend GroundednessScore = todouble(customDimensions.groundedness_score)
+| summarize
+    AvgGroundedness = round(avg(GroundednessScore), 3),
+    MinGroundedness = round(min(GroundednessScore), 3),
+    MaxGroundedness = round(max(GroundednessScore), 3),
+    BelowThreshold = countif(GroundednessScore < 0.85),
+    TotalResponses = count()
+| extend BelowThresholdRate = round(100.0 * BelowThreshold / TotalResponses, 2)
+
+// Query: Citation Usage
+customEvents
+| where timestamp > ago(24h)
+| where name == "RAGResponse"
+| extend CitationCount = toint(customDimensions.citation_count)
+| summarize
+    AvgCitations = round(avg(CitationCount), 2),
+    NoCitations = countif(CitationCount == 0),
+    TotalResponses = count()
+| extend NoCitationRate = round(100.0 * NoCitations / TotalResponses, 2)
+
+// Query: User Feedback Summary
+customEvents
+| where timestamp > ago(7d)
+| where name == "UserFeedback"
+| extend
+    FeedbackType = tostring(customDimensions.feedback_type),
+    Rating = toint(customDimensions.rating)
+| summarize
+    Count = count(),
+    AvgRating = round(avg(Rating), 2)
+    by FeedbackType
+| order by Count desc
+
+// Query: Quality Score Trend
+customEvents
+| where timestamp > ago(7d)
+| where name == "RAGResponse"
+| extend GroundednessScore = todouble(customDimensions.groundedness_score)
+| summarize AvgGroundedness = round(avg(GroundednessScore), 3) by bin(timestamp, 1h)
+| render timechart
+
+// ============================================================================
+// 5. SECURITY & ACCESS METRICS
+// ============================================================================
+
+// Query: ACL Filter Strategy Usage
+customEvents
+| where timestamp > ago(24h)
+| where name == "ACLFilterApplied"
+| extend Strategy = tostring(customDimensions.strategy)
+| summarize Count = count() by Strategy
+| render piechart
+
+// Query: ACL Overflow Events (Groups Truncated)
+customEvents
+| where timestamp > ago(24h)
+| where name == "ACLFilterApplied"
+| extend GroupsTruncated = toint(customDimensions.groups_truncated)
+| where GroupsTruncated > 0
+| summarize
+    OverflowEvents = count(),
+    AvgTruncated = round(avg(GroupsTruncated), 0),
+    MaxTruncated = max(GroupsTruncated)
+    by bin(timestamp, 1h)
+
+// Query: Access Denied Events
+customEvents
+| where timestamp > ago(24h)
+| where name == "AccessDenied"
+| extend
+    Reason = tostring(customDimensions.reason),
+    UserId = tostring(customDimensions.user_id)
+| summarize Count = count() by Reason
+| order by Count desc
+
+// Query: Sensitivity Level Access Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "DocumentAccessed"
+| extend SensitivityLevel = tostring(customDimensions.sensitivity)
+| summarize Count = count() by SensitivityLevel
+| render piechart
+
+// ============================================================================
+// 6. INGESTION PIPELINE METRICS
+// ============================================================================
+
+// Query: Ingestion Pipeline Status
+customEvents
+| where timestamp > ago(24h)
+| where name == "IngestionCompleted" or name == "IngestionFailed"
+| extend
+    Status = case(name == "IngestionCompleted", "Success", "Failed"),
+    DocId = tostring(customDimensions.doc_id),
+    ChunksCreated = toint(customDimensions.chunks_count)
+| summarize
+    Total = count(),
+    Successful = countif(Status == "Success"),
+    Failed = countif(Status == "Failed"),
+    TotalChunks = sum(ChunksCreated)
+    by bin(timestamp, 1h)
+| extend SuccessRate = round(100.0 * Successful / Total, 2)
+
+// Query: Document Processing Time
+customEvents
+| where timestamp > ago(24h)
+| where name == "IngestionCompleted"
+| extend
+    ProcessingTimeMs = todouble(customDimensions.processing_time_ms),
+    PageCount = toint(customDimensions.page_count)
+| summarize
+    AvgProcessingTime = round(avg(ProcessingTimeMs) / 1000, 2),
+    P95ProcessingTime = round(percentile(ProcessingTimeMs, 95) / 1000, 2),
+    AvgPages = round(avg(PageCount), 0)
+
+// Query: Self-Healing Repair Events
+customEvents
+| where timestamp > ago(7d)
+| where name == "TableRepairAttempted"
+| extend
+    Success = tobool(customDimensions.success),
+    RepairType = tostring(customDimensions.repair_type)
+| summarize
+    Total = count(),
+    Successful = countif(Success == true),
+    SuccessRate = round(100.0 * countif(Success == true) / count(), 2)
+    by RepairType
+
+// ============================================================================
+// 7. AGENT/TOOL METRICS
+// ============================================================================
+
+// Query: Tool Usage Distribution
+customEvents
+| where timestamp > ago(24h)
+| where name == "ToolExecuted"
+| extend
+    ToolName = tostring(customDimensions.tool_name),
+    Success = tobool(customDimensions.success)
+| summarize
+    Calls = count(),
+    SuccessRate = round(100.0 * countif(Success == true) / count(), 2)
+    by ToolName
+| order by Calls desc
+
+// Query: Approval Gate Stats
+customEvents
+| where timestamp > ago(24h)
+| where name == "ApprovalRequested"
+| extend
+    Approved = tobool(customDimensions.approved),
+    ToolName = tostring(customDimensions.tool_name)
+| summarize
+    Total = count(),
+    Approved = countif(Approved == true),
+    Rejected = countif(Approved == false),
+    ApprovalRate = round(100.0 * countif(Approved == true) / count(), 2)
+    by ToolName
+
+// Query: Agent Plan Complexity
+customEvents
+| where timestamp > ago(24h)
+| where name == "PlanCreated"
+| extend StepCount = toint(customDimensions.step_count)
+| summarize
+    AvgSteps = round(avg(StepCount), 2),
+    MaxSteps = max(StepCount),
+    SingleStepPlans = countif(StepCount == 1),
+    MultiStepPlans = countif(StepCount > 1)
+
+// ============================================================================
+// 8. MEMORY LAYER METRICS
+// ============================================================================
+
+// Query: Memory Usage Stats
+customEvents
+| where timestamp > ago(24h)
+| where name == "MemoryQueried"
+| extend
+    MemoryHits = toint(customDimensions.memory_hits),
+    RawHits = toint(customDimensions.raw_hits)
+| summarize
+    TotalQueries = count(),
+    AvgMemoryHits = round(avg(MemoryHits), 2),
+    AvgRawHits = round(avg(RawHits), 2),
+    MemoryOnlyQueries = countif(MemoryHits > 0 and RawHits == 0)
+
+// Query: Memory Approval Backlog
+customEvents
+| where timestamp > ago(7d)
+| where name == "MemoryCandidate"
+| extend Status = tostring(customDimensions.status)
+| summarize Count = count() by Status
+| render piechart
+
+// Query: Conflict Detection Rate
+customEvents
+| where timestamp > ago(24h)
+| where name == "MemoryConflictDetected"
+| summarize
+    ConflictsDetected = count(),
+    UniqueDocPairs = dcount(strcat(customDimensions.memory_id, customDimensions.chunk_id))
+
+// ============================================================================
+// 9. ERROR & EXCEPTION TRACKING
+// ============================================================================
+
+// Query: Exception Summary
+exceptions
+| where timestamp > ago(24h)
+| summarize
+    Count = count(),
+    AffectedUsers = dcount(user_Id)
+    by type, outerMessage
+| order by Count desc
+| take 20
+
+// Query: Error Rate by Component
+requests
+| where timestamp > ago(24h)
+| extend Component = case(
+    name contains "retrieve", "Retrieval",
+    name contains "rerank", "Reranking",
+    name contains "ingest", "Ingestion",
+    name contains "chat", "Chat",
+    "Other"
+)
+| summarize
+    Total = count(),
+    Failed = countif(success == false),
+    ErrorRate = round(100.0 * countif(success == false) / count(), 2)
+    by Component
+| order by ErrorRate desc
+
+// Query: Rate Limiting Events
+customEvents
+| where timestamp > ago(24h)
+| where name == "RateLimitExceeded"
+| extend
+    Service = tostring(customDimensions.service),
+    TenantId = tostring(customDimensions.tenant_id)
+| summarize Count = count() by Service, TenantId
+| order by Count desc
+
+// ============================================================================
+// 10. ALERTING QUERIES
+// ============================================================================
+
+// Alert: High Error Rate (> 5%)
+requests
+| where timestamp > ago(15m)
+| summarize
+    Total = count(),
+    Failed = countif(success == false)
+| extend ErrorRate = 100.0 * Failed / Total
+| where ErrorRate > 5
+| project AlertMessage = strcat("High error rate detected: ", round(ErrorRate, 2), "%")
+
+// Alert: Retrieval Latency Spike (P95 > 2000ms)
+requests
+| where timestamp > ago(15m)
+| where name contains "retrieve"
+| summarize P95Latency = percentile(duration, 95)
+| where P95Latency > 2000
+| project AlertMessage = strcat("Retrieval latency spike: P95 = ", round(P95Latency, 0), "ms")
+
+// Alert: Low Groundedness Score
+customEvents
+| where timestamp > ago(1h)
+| where name == "RAGResponse"
+| extend GroundednessScore = todouble(customDimensions.groundedness_score)
+| summarize AvgGroundedness = avg(GroundednessScore)
+| where AvgGroundedness < 0.80
+| project AlertMessage = strcat("Low groundedness score: ", round(AvgGroundedness, 3))
+
+// Alert: Ingestion Failures
+customEvents
+| where timestamp > ago(1h)
+| where name == "IngestionFailed"
+| summarize FailureCount = count()
+| where FailureCount > 5
+| project AlertMessage = strcat("Multiple ingestion failures: ", FailureCount, " in last hour")
+
+// Alert: Cost Spike (> 150% of daily average)
+let DailyAvg = customEvents
+| where timestamp > ago(30d) and timestamp < ago(1d)
+| where name == "LLMCompletion"
+| extend Cost = (toint(customDimensions.input_tokens) * 0.003 + toint(customDimensions.output_tokens) * 0.012) / 1000
+| summarize DailyCost = sum(Cost) by bin(timestamp, 1d)
+| summarize AvgDailyCost = avg(DailyCost);
+customEvents
+| where timestamp > ago(1d)
+| where name == "LLMCompletion"
+| extend Cost = (toint(customDimensions.input_tokens) * 0.003 + toint(customDimensions.output_tokens) * 0.012) / 1000
+| summarize TodayCost = sum(Cost)
+| extend AvgDaily = toscalar(DailyAvg)
+| where TodayCost > AvgDaily * 1.5
+| project AlertMessage = strcat("Cost spike detected: $", round(TodayCost, 2), " vs avg $", round(AvgDaily, 2))

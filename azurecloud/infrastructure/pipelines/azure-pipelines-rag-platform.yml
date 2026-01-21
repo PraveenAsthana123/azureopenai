@@ -1,0 +1,519 @@
+# ============================================================================
+# Azure DevOps CI/CD Pipeline for Enterprise RAG Platform
+# ============================================================================
+#
+# This pipeline handles:
+# - Build and test
+# - RAG quality evaluation gates
+# - Security scanning
+# - Infrastructure deployment
+# - Application deployment
+# - Staged rollout with canary
+#
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  paths:
+    include:
+      - src/**
+      - infrastructure/**
+      - configs/**
+    exclude:
+      - '**/*.md'
+      - docs/**
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  - group: rag-platform-secrets
+  - name: pythonVersion
+    value: '3.11'
+  - name: azureSubscription
+    value: 'rag-platform-service-connection'
+  - name: resourceGroup
+    value: 'rg-rag-platform-$(environment)'
+  - name: isMain
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  - name: isDevelop
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/develop')]
+
+stages:
+  # ============================================================================
+  # Stage 1: Build & Unit Tests
+  # ============================================================================
+  - stage: Build
+    displayName: 'Build & Test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build, Lint, and Unit Test'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install poetry
+              poetry install --with dev
+            displayName: 'Install dependencies'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - script: |
+              poetry run ruff check src/ --output-format=github
+            displayName: 'Lint with Ruff'
+            workingDirectory: $(Build.SourcesDirectory)
+            continueOnError: true
+
+          - script: |
+              poetry run mypy src/ --ignore-missing-imports
+            displayName: 'Type check with MyPy'
+            workingDirectory: $(Build.SourcesDirectory)
+            continueOnError: true
+
+          - script: |
+              poetry run pytest src/tests/unit/ \
+                --junitxml=junit/test-results.xml \
+                --cov=src \
+                --cov-report=xml:coverage.xml \
+                --cov-report=html:htmlcov \
+                -v
+            displayName: 'Run unit tests'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-results.xml'
+              failTaskOnFailedTests: true
+            displayName: 'Publish test results'
+
+          - task: PublishCodeCoverageResults@1
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '$(Build.SourcesDirectory)/coverage.xml'
+              reportDirectory: '$(Build.SourcesDirectory)/htmlcov'
+            displayName: 'Publish code coverage'
+
+          - script: |
+              poetry build
+            displayName: 'Build package'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.SourcesDirectory)/dist'
+              artifactName: 'python-package'
+            displayName: 'Publish build artifacts'
+
+  # ============================================================================
+  # Stage 2: Security Scanning
+  # ============================================================================
+  - stage: Security
+    displayName: 'Security Scanning'
+    dependsOn: Build
+    jobs:
+      - job: SecurityScan
+        displayName: 'Security & Vulnerability Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install safety bandit pip-audit
+            displayName: 'Install security tools'
+
+          - script: |
+              pip-audit --requirement requirements.txt --output pip-audit-report.json --format json || true
+            displayName: 'Scan dependencies with pip-audit'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - script: |
+              bandit -r src/ -f json -o bandit-report.json || true
+            displayName: 'Static analysis with Bandit'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - script: |
+              # Check for secrets in code
+              pip install detect-secrets
+              detect-secrets scan src/ --all-files > secrets-report.json || true
+            displayName: 'Scan for secrets'
+            workingDirectory: $(Build.SourcesDirectory)
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.SourcesDirectory)'
+              artifactName: 'security-reports'
+              includeRootFolder: false
+            displayName: 'Publish security reports'
+
+  # ============================================================================
+  # Stage 3: RAG Quality Evaluation
+  # ============================================================================
+  - stage: RAGEvaluation
+    displayName: 'RAG Quality Gates'
+    dependsOn: Build
+    condition: and(succeeded(), or(eq(variables.isMain, true), eq(variables.isDevelop, true)))
+    jobs:
+      - job: EvaluateRAG
+        displayName: 'Run RAG Evaluation Suite'
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 60
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install poetry
+              poetry install
+            displayName: 'Install dependencies'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Run RAG evaluation against staging environment
+                poetry run python src/evaluation/run_eval.py \
+                  --eval-set data/eval/golden-qa-set.json \
+                  --environment staging \
+                  --output-dir $(Build.ArtifactStagingDirectory)/eval-results
+            displayName: 'Run RAG evaluation'
+            env:
+              AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+              AZURE_SEARCH_ENDPOINT: $(AZURE_SEARCH_ENDPOINT)
+
+          - script: |
+              # Parse evaluation results and check thresholds
+              python -c "
+              import json
+              import sys
+
+              with open('$(Build.ArtifactStagingDirectory)/eval-results/summary.json') as f:
+                  results = json.load(f)
+
+              thresholds = {
+                  'groundedness': 0.85,
+                  'hallucination_rate': 0.05,
+                  'relevance': 0.80,
+                  'citation_accuracy': 0.85
+              }
+
+              failed = []
+              for metric, threshold in thresholds.items():
+                  value = results.get(metric, 0)
+                  if metric == 'hallucination_rate':
+                      if value > threshold:
+                          failed.append(f'{metric}: {value:.2f} > {threshold}')
+                  else:
+                      if value < threshold:
+                          failed.append(f'{metric}: {value:.2f} < {threshold}')
+
+              if failed:
+                  print('RAG Quality Gate FAILED:')
+                  for f in failed:
+                      print(f'  - {f}')
+                  sys.exit(1)
+              else:
+                  print('RAG Quality Gate PASSED')
+                  for metric, threshold in thresholds.items():
+                      print(f'  - {metric}: {results.get(metric, 0):.2f}')
+              "
+            displayName: 'Check quality thresholds'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)/eval-results'
+              artifactName: 'rag-eval-results'
+            displayName: 'Publish evaluation results'
+
+  # ============================================================================
+  # Stage 4: Infrastructure Deployment
+  # ============================================================================
+  - stage: DeployInfrastructure
+    displayName: 'Deploy Infrastructure'
+    dependsOn:
+      - Security
+      - RAGEvaluation
+    condition: and(succeeded(), eq(variables.isMain, true))
+    jobs:
+      - deployment: DeployBicep
+        displayName: 'Deploy Azure Resources'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Validate Bicep template
+                      az deployment group validate \
+                        --resource-group $(resourceGroup) \
+                        --template-file infrastructure/bicep/main.bicep \
+                        --parameters environment=prod \
+                        --parameters ownerEmail=$(ownerEmail)
+                  displayName: 'Validate Bicep template'
+
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Deploy infrastructure
+                      az deployment group create \
+                        --resource-group $(resourceGroup) \
+                        --template-file infrastructure/bicep/main.bicep \
+                        --parameters environment=prod \
+                        --parameters ownerEmail=$(ownerEmail) \
+                        --parameters enablePrivateEndpoints=true
+                  displayName: 'Deploy Bicep template'
+
+  # ============================================================================
+  # Stage 5: Deploy Search Index
+  # ============================================================================
+  - stage: DeploySearchIndex
+    displayName: 'Deploy Search Index'
+    dependsOn: DeployInfrastructure
+    condition: succeeded()
+    jobs:
+      - job: DeployIndex
+        displayName: 'Create/Update Search Index'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Get search service details
+                SEARCH_NAME=$(az search service list -g $(resourceGroup) --query "[0].name" -o tsv)
+                SEARCH_KEY=$(az search admin-key show --service-name $SEARCH_NAME -g $(resourceGroup) --query "primaryKey" -o tsv)
+
+                # Deploy index schema
+                curl -X PUT \
+                  "https://${SEARCH_NAME}.search.windows.net/indexes/multimodal-rag-index?api-version=2024-07-01" \
+                  -H "Content-Type: application/json" \
+                  -H "api-key: ${SEARCH_KEY}" \
+                  -d @configs/search-indexes/multimodal-rag-index.json
+            displayName: 'Deploy search index'
+
+  # ============================================================================
+  # Stage 6: Deploy Application (Canary)
+  # ============================================================================
+  - stage: DeployCanary
+    displayName: 'Deploy Canary (5%)'
+    dependsOn: DeploySearchIndex
+    condition: succeeded()
+    jobs:
+      - deployment: DeployCanarySlot
+        displayName: 'Deploy to Canary Slot'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production-canary'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: python-package
+
+                - task: AzureFunctionApp@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'functionAppLinux'
+                    appName: '$(functionAppName)'
+                    deployToSlotOrASE: true
+                    slotName: 'canary'
+                    package: '$(Pipeline.Workspace)/python-package/*.whl'
+                  displayName: 'Deploy to canary slot'
+
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Set traffic to 5% for canary
+                      az functionapp traffic-routing set \
+                        --distribution canary=5 \
+                        --name $(functionAppName) \
+                        --resource-group $(resourceGroup)
+                  displayName: 'Route 5% traffic to canary'
+
+  # ============================================================================
+  # Stage 7: Canary Validation
+  # ============================================================================
+  - stage: ValidateCanary
+    displayName: 'Validate Canary'
+    dependsOn: DeployCanary
+    condition: succeeded()
+    jobs:
+      - job: CanaryTests
+        displayName: 'Run Canary Validation'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Wait for canary to stabilize
+                sleep 60
+
+                # Run smoke tests against canary
+                CANARY_URL=$(az functionapp show -n $(functionAppName) -g $(resourceGroup) --query "defaultHostName" -o tsv)
+
+                # Health check
+                curl -f "https://${CANARY_URL}/api/health" || exit 1
+
+                # Sample query test
+                curl -f -X POST "https://${CANARY_URL}/api/chat" \
+                  -H "Content-Type: application/json" \
+                  -d '{"query": "test query", "tenant_id": "test"}' || exit 1
+            displayName: 'Canary smoke tests'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Check error rate in App Insights
+                ERROR_RATE=$(az monitor app-insights query \
+                  --app $(appInsightsName) \
+                  --analytics-query "requests | where timestamp > ago(10m) | summarize errorRate = countif(success == false) * 100.0 / count()" \
+                  --query "tables[0].rows[0][0]" -o tsv)
+
+                if (( $(echo "$ERROR_RATE > 5" | bc -l) )); then
+                  echo "Error rate too high: $ERROR_RATE%"
+                  exit 1
+                fi
+            displayName: 'Check canary error rate'
+
+  # ============================================================================
+  # Stage 8: Production Deployment
+  # ============================================================================
+  - stage: DeployProduction
+    displayName: 'Deploy Production (100%)'
+    dependsOn: ValidateCanary
+    condition: succeeded()
+    jobs:
+      - deployment: SwapSlots
+        displayName: 'Swap Canary to Production'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Gradually increase traffic
+                      for pct in 20 50 80 100; do
+                        echo "Routing ${pct}% to canary..."
+                        az functionapp traffic-routing set \
+                          --distribution canary=$pct \
+                          --name $(functionAppName) \
+                          --resource-group $(resourceGroup)
+                        sleep 30
+                      done
+
+                      # Swap slots
+                      az functionapp deployment slot swap \
+                        --slot canary \
+                        --name $(functionAppName) \
+                        --resource-group $(resourceGroup)
+
+                      # Reset traffic routing
+                      az functionapp traffic-routing clear \
+                        --name $(functionAppName) \
+                        --resource-group $(resourceGroup)
+                  displayName: 'Gradual rollout and swap'
+
+  # ============================================================================
+  # Stage 9: Post-Deployment Validation
+  # ============================================================================
+  - stage: PostDeployValidation
+    displayName: 'Post-Deploy Validation'
+    dependsOn: DeployProduction
+    condition: succeeded()
+    jobs:
+      - job: ValidationTests
+        displayName: 'Run Post-Deploy Tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              pip install poetry
+              poetry install
+            displayName: 'Install dependencies'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Run integration tests against production
+                poetry run pytest src/tests/integration/ \
+                  --environment production \
+                  -v
+            displayName: 'Run integration tests'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Run quick RAG eval on production
+                poetry run python src/evaluation/run_eval.py \
+                  --eval-set data/eval/smoke-test-set.json \
+                  --environment production \
+                  --quick
+            displayName: 'Quick RAG validation'
+
+          - script: |
+              # Notify on success
+              echo "Deployment completed successfully!"
+            displayName: 'Deployment complete'

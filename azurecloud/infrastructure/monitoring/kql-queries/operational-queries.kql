@@ -1,0 +1,555 @@
+// =============================================================================
+// Enterprise Copilot - Operational KQL Queries
+// =============================================================================
+// Usage: Copy queries to Azure Log Analytics or Application Insights
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// SECTION 1: System Health & Performance
+// -----------------------------------------------------------------------------
+
+// 1.1 Overall System Health Summary
+// Shows key health metrics for the last hour
+requests
+| where timestamp > ago(1h)
+| summarize
+    TotalRequests = count(),
+    SuccessfulRequests = countif(success == true),
+    FailedRequests = countif(success == false),
+    SuccessRate = round(100.0 * countif(success == true) / count(), 2),
+    AvgLatencyMs = round(avg(duration), 0),
+    P50LatencyMs = round(percentile(duration, 50), 0),
+    P95LatencyMs = round(percentile(duration, 95), 0),
+    P99LatencyMs = round(percentile(duration, 99), 0)
+
+// 1.2 Request Volume Over Time (5-minute buckets)
+requests
+| where timestamp > ago(24h)
+| summarize
+    Total = count(),
+    Success = countif(success == true),
+    Failed = countif(success == false)
+by bin(timestamp, 5m)
+| order by timestamp asc
+
+// 1.3 Latency Percentiles Trend
+requests
+| where timestamp > ago(24h)
+| summarize
+    P50 = percentile(duration, 50),
+    P75 = percentile(duration, 75),
+    P95 = percentile(duration, 95),
+    P99 = percentile(duration, 99)
+by bin(timestamp, 15m)
+| order by timestamp asc
+
+// 1.4 Error Rate Trend
+requests
+| where timestamp > ago(24h)
+| summarize
+    TotalRequests = count(),
+    Errors = countif(success == false),
+    ErrorRate = round(100.0 * countif(success == false) / count(), 2)
+by bin(timestamp, 15m)
+| order by timestamp asc
+
+// -----------------------------------------------------------------------------
+// SECTION 2: RAG Pipeline Analysis
+// -----------------------------------------------------------------------------
+
+// 2.1 RAG Component Latency Breakdown
+customMetrics
+| where timestamp > ago(1h)
+| where name in ('embedding_latency', 'search_latency', 'reranking_latency', 'llm_latency', 'total_rag_latency')
+| summarize
+    AvgMs = round(avg(value), 0),
+    P50Ms = round(percentile(value, 50), 0),
+    P95Ms = round(percentile(value, 95), 0),
+    Count = count()
+by name
+| order by AvgMs desc
+
+// 2.2 RAG Query Success Breakdown
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "rag_query"
+| extend
+    cache_hit = tobool(customDimensions.cache_hit),
+    docs_retrieved = toint(customDimensions.documents_retrieved),
+    intent = tostring(customDimensions.intent)
+| summarize
+    TotalQueries = count(),
+    CacheHits = countif(cache_hit == true),
+    CacheHitRate = round(100.0 * countif(cache_hit == true) / count(), 2),
+    AvgDocsRetrieved = round(avg(docs_retrieved), 1)
+by bin(timestamp, 1h)
+
+// 2.3 Intent Distribution
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "intent_classification"
+| extend intent = tostring(customDimensions.classified_intent)
+| summarize QueryCount = count() by intent
+| order by QueryCount desc
+
+// 2.4 Empty Retrieval Analysis (No docs found)
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "rag_query"
+| extend docs_retrieved = toint(customDimensions.documents_retrieved)
+| where docs_retrieved == 0
+| extend query = tostring(customDimensions.query)
+| summarize Count = count() by query
+| order by Count desc
+| take 20
+
+// 2.5 Cache Performance Analysis
+customMetrics
+| where timestamp > ago(24h)
+| where name == "cache_hit_rate"
+| summarize
+    AvgHitRate = round(avg(value), 2),
+    MinHitRate = round(min(value), 2),
+    MaxHitRate = round(max(value), 2)
+by bin(timestamp, 1h)
+
+// -----------------------------------------------------------------------------
+// SECTION 3: Azure OpenAI Analysis
+// -----------------------------------------------------------------------------
+
+// 3.1 Token Usage Summary
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+| where MetricName == "TokenTransaction"
+| where TimeGenerated > ago(24h)
+| summarize
+    TotalTokens = sum(Total),
+    AvgTokensPerMin = round(avg(Total), 0)
+by bin(TimeGenerated, 1h)
+| order by TimeGenerated asc
+
+// 3.2 Token Usage by Model/Deployment
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+| where MetricName == "TokenTransaction"
+| where TimeGenerated > ago(24h)
+| extend Deployment = tostring(split(DimensionValue, ',')[0])
+| summarize TotalTokens = sum(Total) by Deployment
+| order by TotalTokens desc
+
+// 3.3 OpenAI Rate Limiting Events
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+| where MetricName == "RateLimitedCalls"
+| where TimeGenerated > ago(24h)
+| where Total > 0
+| summarize RateLimitedCalls = sum(Total) by bin(TimeGenerated, 15m)
+| order by TimeGenerated asc
+
+// 3.4 OpenAI Latency Analysis
+customMetrics
+| where timestamp > ago(24h)
+| where name == "llm_latency"
+| extend model = tostring(customDimensions.model)
+| summarize
+    AvgLatency = round(avg(value), 0),
+    P95Latency = round(percentile(value, 95), 0),
+    Calls = count()
+by model, bin(timestamp, 1h)
+
+// 3.5 Cost Estimation (tokens to estimated cost)
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES"
+| where MetricName == "TokenTransaction"
+| where TimeGenerated > ago(30d)
+| extend Deployment = tostring(split(DimensionValue, ',')[0])
+| summarize TotalTokens = sum(Total) by Deployment, bin(TimeGenerated, 1d)
+| extend
+    // Approximate pricing (adjust based on your pricing)
+    EstimatedCost = case(
+        Deployment contains "gpt-4o", TotalTokens / 1000000 * 5.0,  // $5 per 1M tokens
+        Deployment contains "gpt-4", TotalTokens / 1000000 * 30.0,  // $30 per 1M tokens
+        Deployment contains "embedding", TotalTokens / 1000000 * 0.13,  // $0.13 per 1M tokens
+        TotalTokens / 1000000 * 2.0  // Default
+    )
+| summarize DailyCost = sum(EstimatedCost) by bin(TimeGenerated, 1d)
+
+// -----------------------------------------------------------------------------
+// SECTION 4: Azure AI Search Analysis
+// -----------------------------------------------------------------------------
+
+// 4.1 Search Query Performance
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "SearchLatency"
+| where TimeGenerated > ago(24h)
+| summarize
+    AvgLatencyMs = round(avg(Average), 0),
+    P95LatencyMs = round(percentile(Average, 95), 0),
+    MaxLatencyMs = round(max(Maximum), 0)
+by bin(TimeGenerated, 15m)
+
+// 4.2 Search Queries Per Second
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "SearchQueriesPerSecond"
+| where TimeGenerated > ago(24h)
+| summarize QPS = avg(Average) by bin(TimeGenerated, 5m)
+| order by TimeGenerated asc
+
+// 4.3 Index Document Count Trend
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "DocumentCount"
+| where TimeGenerated > ago(7d)
+| summarize DocCount = max(Maximum) by bin(TimeGenerated, 1h)
+| order by TimeGenerated asc
+
+// 4.4 Search Throttled Queries
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "ThrottledSearchQueriesPercentage"
+| where TimeGenerated > ago(24h)
+| where Average > 0
+| summarize ThrottledPct = avg(Average) by bin(TimeGenerated, 15m)
+
+// 4.5 Hybrid Search Score Distribution
+customMetrics
+| where timestamp > ago(24h)
+| where name == "search_relevance_score"
+| summarize
+    AvgScore = round(avg(value), 3),
+    P25Score = round(percentile(value, 25), 3),
+    MedianScore = round(percentile(value, 50), 3),
+    P75Score = round(percentile(value, 75), 3)
+by bin(timestamp, 1h)
+
+// -----------------------------------------------------------------------------
+// SECTION 5: Error Analysis
+// -----------------------------------------------------------------------------
+
+// 5.1 Top Exceptions
+exceptions
+| where timestamp > ago(24h)
+| summarize
+    Count = count(),
+    LastOccurrence = max(timestamp)
+by type, outerMessage
+| order by Count desc
+| take 20
+
+// 5.2 Exception Trend
+exceptions
+| where timestamp > ago(24h)
+| summarize ExceptionCount = count() by bin(timestamp, 1h), type
+| order by timestamp asc
+
+// 5.3 Failed Requests by Endpoint
+requests
+| where timestamp > ago(24h)
+| where success == false
+| summarize
+    FailedCount = count(),
+    ErrorCodes = make_set(resultCode)
+by name
+| order by FailedCount desc
+
+// 5.4 HTTP Error Code Distribution
+requests
+| where timestamp > ago(24h)
+| where toint(resultCode) >= 400
+| summarize Count = count() by resultCode
+| order by Count desc
+
+// 5.5 Dependency Failures
+dependencies
+| where timestamp > ago(24h)
+| where success == false
+| summarize
+    FailureCount = count(),
+    AvgDuration = round(avg(duration), 0)
+by target, type, resultCode
+| order by FailureCount desc
+
+// -----------------------------------------------------------------------------
+// SECTION 6: Ingestion Pipeline
+// -----------------------------------------------------------------------------
+
+// 6.1 Document Ingestion Summary
+traces
+| where timestamp > ago(24h)
+| where operation_Name contains "ingestion"
+| extend
+    source = tostring(customDimensions.source),
+    doc_type = tostring(customDimensions.document_type),
+    status = case(
+        severityLevel <= 1, "Success",
+        severityLevel == 2, "Warning",
+        "Failed"
+    )
+| summarize
+    Total = count(),
+    Success = countif(status == "Success"),
+    Warnings = countif(status == "Warning"),
+    Failed = countif(status == "Failed")
+by source, bin(timestamp, 1h)
+
+// 6.2 Ingestion Errors Details
+traces
+| where timestamp > ago(24h)
+| where operation_Name contains "ingestion"
+| where severityLevel >= 3
+| extend
+    source = tostring(customDimensions.source),
+    doc_id = tostring(customDimensions.document_id),
+    error = tostring(customDimensions.error_message)
+| project timestamp, source, doc_id, error, message
+| order by timestamp desc
+| take 50
+
+// 6.3 Chunking Statistics
+customMetrics
+| where timestamp > ago(24h)
+| where name in ('chunks_created', 'avg_chunk_tokens', 'documents_processed')
+| summarize
+    Value = sum(value)
+by name, bin(timestamp, 1h)
+
+// 6.4 Dead Letter Queue Items
+traces
+| where timestamp > ago(7d)
+| where operation_Name == "ingestion_dlq"
+| extend
+    doc_id = tostring(customDimensions.document_id),
+    error = tostring(customDimensions.error),
+    retry_count = toint(customDimensions.retry_count)
+| summarize
+    DLQCount = count(),
+    MaxRetries = max(retry_count)
+by doc_id, error
+| order by DLQCount desc
+
+// -----------------------------------------------------------------------------
+// SECTION 7: User Analytics
+// -----------------------------------------------------------------------------
+
+// 7.1 Daily Active Users
+customEvents
+| where timestamp > ago(30d)
+| where name == "user_query"
+| summarize DAU = dcount(tostring(customDimensions.user_id)) by bin(timestamp, 1d)
+| order by timestamp asc
+
+// 7.2 Query Volume by User
+customEvents
+| where timestamp > ago(7d)
+| where name == "user_query"
+| extend user_id = tostring(customDimensions.user_id)
+| summarize QueryCount = count() by user_id
+| order by QueryCount desc
+| take 20
+
+// 7.3 Popular Query Topics
+traces
+| where timestamp > ago(7d)
+| where operation_Name == "intent_classification"
+| extend
+    query = tostring(customDimensions.query),
+    intent = tostring(customDimensions.classified_intent)
+| summarize Count = count() by intent
+| order by Count desc
+
+// 7.4 User Satisfaction (if feedback collected)
+customEvents
+| where timestamp > ago(30d)
+| where name == "user_feedback"
+| extend
+    rating = toint(customDimensions.rating),
+    feedback_type = tostring(customDimensions.type)
+| summarize
+    AvgRating = round(avg(rating), 2),
+    ResponseCount = count()
+by bin(timestamp, 1d), feedback_type
+
+// 7.5 Session Duration Analysis
+customEvents
+| where timestamp > ago(7d)
+| where name in ("session_start", "session_end")
+| extend
+    session_id = tostring(customDimensions.session_id),
+    event_type = name
+| summarize
+    StartTime = minif(timestamp, name == "session_start"),
+    EndTime = maxif(timestamp, name == "session_end")
+by session_id
+| where isnotnull(EndTime)
+| extend DurationMinutes = datetime_diff('minute', EndTime, StartTime)
+| summarize
+    AvgDuration = round(avg(DurationMinutes), 1),
+    MedianDuration = percentile(DurationMinutes, 50),
+    SessionCount = count()
+
+// -----------------------------------------------------------------------------
+// SECTION 8: Security & Compliance
+// -----------------------------------------------------------------------------
+
+// 8.1 Access Denied Events
+traces
+| where timestamp > ago(24h)
+| where message contains "access denied" or message contains "unauthorized"
+| extend
+    user_id = tostring(customDimensions.user_id),
+    resource = tostring(customDimensions.resource_requested)
+| summarize AccessDeniedCount = count() by user_id, resource, bin(timestamp, 1h)
+| order by AccessDeniedCount desc
+
+// 8.2 Suspicious Query Patterns (potential prompt injection)
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "rag_query"
+| extend query = tostring(customDimensions.query)
+| where query contains "ignore" and query contains "instruction"
+    or query contains "system prompt"
+    or query contains "jailbreak"
+    or query contains "pretend"
+    or query matches regex @"(?i)(ignore|disregard|forget).*(previous|above|prior)"
+| project timestamp, query, tostring(customDimensions.user_id)
+
+// 8.3 High-Volume User Detection (potential abuse)
+customEvents
+| where timestamp > ago(1h)
+| where name == "user_query"
+| extend user_id = tostring(customDimensions.user_id)
+| summarize QueryCount = count() by user_id
+| where QueryCount > 100  // Adjust threshold
+| order by QueryCount desc
+
+// 8.4 PII Detection Events
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "pii_detection"
+| extend
+    pii_found = tobool(customDimensions.pii_detected),
+    pii_types = tostring(customDimensions.pii_types)
+| where pii_found == true
+| summarize PIIEvents = count() by pii_types, bin(timestamp, 1h)
+
+// 8.5 RBAC Filter Verification
+traces
+| where timestamp > ago(24h)
+| where operation_Name == "search_query"
+| extend
+    user_groups = tostring(customDimensions.user_groups),
+    filter_applied = tostring(customDimensions.acl_filter)
+| where isempty(filter_applied)
+| summarize Count = count() by bin(timestamp, 1h)
+
+// -----------------------------------------------------------------------------
+// SECTION 9: Evaluation Metrics
+// -----------------------------------------------------------------------------
+
+// 9.1 Groundedness Scores Trend
+customMetrics
+| where timestamp > ago(7d)
+| where name == "groundedness_score"
+| summarize
+    AvgScore = round(avg(value), 3),
+    P25 = round(percentile(value, 25), 3),
+    Median = round(percentile(value, 50), 3),
+    P75 = round(percentile(value, 75), 3)
+by bin(timestamp, 1d)
+
+// 9.2 Hallucination Detection Summary
+customMetrics
+| where timestamp > ago(7d)
+| where name == "hallucination_score"
+| summarize
+    AvgScore = round(avg(value), 3),
+    HighHallucinationCount = countif(value > 0.3)
+by bin(timestamp, 1d)
+
+// 9.3 Retrieval Quality (nDCG)
+customMetrics
+| where timestamp > ago(7d)
+| where name == "retrieval_ndcg"
+| summarize
+    AvgNDCG = round(avg(value), 3),
+    MinNDCG = round(min(value), 3),
+    MaxNDCG = round(max(value), 3)
+by bin(timestamp, 1d)
+
+// 9.4 Response Relevance Scores
+customMetrics
+| where timestamp > ago(7d)
+| where name == "relevance_score"
+| summarize
+    AvgRelevance = round(avg(value), 3),
+    LowRelevanceCount = countif(value < 0.5)
+by bin(timestamp, 1d)
+
+// 9.5 Evaluation Metrics Combined View
+customMetrics
+| where timestamp > ago(7d)
+| where name in ('groundedness_score', 'hallucination_score', 'relevance_score', 'retrieval_ndcg')
+| summarize AvgScore = round(avg(value), 3) by name, bin(timestamp, 1d)
+| evaluate pivot(name, take_any(AvgScore))
+
+// -----------------------------------------------------------------------------
+// SECTION 10: Cost & Resource Optimization
+// -----------------------------------------------------------------------------
+
+// 10.1 Resource Utilization Summary
+AzureMetrics
+| where TimeGenerated > ago(24h)
+| where ResourceProvider in ("MICROSOFT.COGNITIVESERVICES", "MICROSOFT.SEARCH", "MICROSOFT.DOCUMENTDB")
+| summarize
+    AvgValue = round(avg(Average), 2),
+    MaxValue = round(max(Maximum), 2)
+by ResourceProvider, MetricName
+| order by ResourceProvider, MetricName
+
+// 10.2 Cosmos DB RU Consumption
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.DOCUMENTDB"
+| where MetricName == "NormalizedRUConsumption"
+| where TimeGenerated > ago(24h)
+| summarize
+    AvgRUPercent = round(avg(Average), 2),
+    MaxRUPercent = round(max(Maximum), 2)
+by bin(TimeGenerated, 15m)
+
+// 10.3 Search Unit Utilization
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "SearchUnitsPercentage"
+| where TimeGenerated > ago(24h)
+| summarize
+    AvgUtilization = round(avg(Average), 2),
+    MaxUtilization = round(max(Maximum), 2)
+by bin(TimeGenerated, 1h)
+
+// 10.4 Storage Growth Trend
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SEARCH"
+| where MetricName == "StorageSize"
+| where TimeGenerated > ago(30d)
+| summarize StorageGB = max(Maximum) / (1024 * 1024 * 1024) by bin(TimeGenerated, 1d)
+| order by TimeGenerated asc
+
+// 10.5 Optimization Opportunities
+// Identifies queries with high latency and low cache utilization
+traces
+| where timestamp > ago(7d)
+| where operation_Name == "rag_query"
+| extend
+    latency_ms = todouble(customDimensions.latency_ms),
+    cache_hit = tobool(customDimensions.cache_hit),
+    query_hash = tostring(customDimensions.query_hash)
+| summarize
+    AvgLatency = round(avg(latency_ms), 0),
+    QueryCount = count(),
+    CacheHits = countif(cache_hit)
+by query_hash
+| where QueryCount > 5 and AvgLatency > 3000 and CacheHits == 0
+| order by QueryCount desc
+| take 20
