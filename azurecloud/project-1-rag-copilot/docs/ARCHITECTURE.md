@@ -402,3 +402,43 @@ deployment_strategy:
 - Function Premium plan for VNET integration + no cold starts
 - Redis cache to reduce embedding API calls
 - Cosmos DB auto-scaling for session management
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2E (Business-to-Employee)
+- **Visibility:** Internal — accessible by all employees via corporate SSO
+- **Project Score:** 8.5 / 10 (Elevated)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Private Link | All PaaS services (OpenAI, AI Search, Cosmos DB) via private endpoints |
+| Network | VNet Isolation | Dedicated VNet (10.0.0.0/16) with NSG rules |
+| Identity | Managed Identity | System-assigned MI for all service-to-service auth |
+| Identity | RBAC | Least-privilege role assignments per resource |
+| Identity | Entra ID | AAD-based authentication for all users |
+| Data | Encryption at Rest | AES-256 (platform-managed keys) |
+| Data | Encryption in Transit | TLS 1.2+ enforced on all endpoints |
+| Data | Key Vault | Secrets, API keys, certificates stored in Key Vault |
+| Application | Content Safety | Azure AI Content Safety filters on all GenAI outputs |
+| Application | Prompt Injection | Input sanitization + system prompt isolation |
+| Application | Rate Limiting | APIM throttling (100 req/min per user) |
+| Monitoring | Defender for Cloud | Continuous security posture assessment |
+| Monitoring | Log Analytics | Centralized audit logs with 90-day retention |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Data Classification | Confidential | Internal documents may contain sensitive business data |
+| Data Retention | 2 years | Chat history and audit logs retained for 2 years |
+| DLP | Enabled | Data Loss Prevention policies prevent sensitive data leakage in responses |
+| Access Audit | Full | All document access and queries logged to Log Analytics |
+| Document Lifecycle | Managed | Ingestion → indexing → archival pipeline with version tracking |
+| Content Accuracy | SLA | Response accuracy monitored; feedback loop for continuous improvement |
+| Responsible AI | Enforced | Grounded responses only (no hallucination), citation required |
+
+### Regulatory Applicability
+- **SOC 2 Type II:** Audit trail for all data access
+- **ISO 27001:** Information security management controls
+- **GDPR (if EU employees):** Right to erasure for personal queries

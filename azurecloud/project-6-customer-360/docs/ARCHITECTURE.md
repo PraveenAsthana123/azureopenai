@@ -250,3 +250,41 @@ A unified customer data platform that consolidates data from multiple sources to
    - Consent management per channel
    - Right to be forgotten (GDPR)
    - Data minimization practices
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2C / B2B (Consumer Profiles + Business Client Analytics)
+- **Visibility:** Customer-Facing + Internal — personalization engine feeds customer apps + internal dashboards
+- **Project Score:** 9.0 / 10 (High)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Private Link | All data services via private endpoints |
+| Network | VNet Isolation | Dedicated data processing VNet |
+| Identity | Managed Identity | System-assigned MI for ETL and APIs |
+| Identity | Consent-Based Access | Data access gated by customer consent records |
+| Data | PII Encryption | Field-level encryption for PII (name, email, phone) |
+| Data | Data Masking | Dynamic masking for analytics users |
+| Data | GDPR Art.17 | Automated right-to-erasure pipeline |
+| Data | CCPA | Do-not-sell flag enforcement |
+| Data | Key Vault | Encryption keys, connection strings secured |
+| Application | Consent Enforcement | Real-time consent check before data access |
+| Monitoring | Access Audit | All profile access logged with purpose |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Consent Management | Centralized | Customer consent preferences tracked and enforced |
+| Data Subject Rights | Automated | GDPR/CCPA erasure, portability, access requests automated |
+| Cross-Border Transfer | SCCs | Standard Contractual Clauses for EU-US data transfer |
+| Data Retention | Policy-driven | Customer data lifecycle managed per jurisdiction |
+| Identity Resolution | Governed | Matching rules audited for accuracy and bias |
+| Personalization Ethics | Transparent | Customers informed of personalization; opt-out available |
+
+### Regulatory Applicability
+- **GDPR:** Full data subject rights automation (Art.15-22)
+- **CCPA/CPRA:** California consumer privacy compliance
+- **ePrivacy:** Cookie/tracking consent management
+- **FTC Act Section 5:** Unfair/deceptive practices prevention in personalization

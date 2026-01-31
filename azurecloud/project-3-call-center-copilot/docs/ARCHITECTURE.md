@@ -260,3 +260,41 @@ Total: ~1-2 seconds (acceptable for voice)
    - Barge-in detection
    - Cancel pending TTS
    - Context preservation
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2C / B2E (Customer-Facing + Internal Agent Assist)
+- **Visibility:** Customer-Facing + Internal — live customer voice/chat + agent desktop
+- **Project Score:** 9.0 / 10 (High)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | WAF + Private Link | Public endpoints behind WAF; backend services via Private Link |
+| Network | DDoS Protection | Standard DDoS protection on public-facing endpoints |
+| Identity | Entra ID | Agent authentication via corporate SSO |
+| Identity | Managed Identity | Service-to-service auth without stored credentials |
+| Data | Call Recording Encryption | AES-256 encryption for all recorded calls |
+| Data | DTMF Masking | Payment card digits masked during recording |
+| Data | PCI DSS | Payment handling zones isolated; no PAN in logs |
+| Data | Key Vault | All secrets, speech keys, connection strings secured |
+| Application | Content Safety | Real-time content filtering on AI responses |
+| Application | TLS 1.2 | End-to-end encryption for voice and chat streams |
+| Monitoring | Sentinel | Security event correlation for fraud detection |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Call Recording Consent | State-by-state | Two-party consent states: both parties notified |
+| Transcript Retention | 7 years | Call transcripts retained per financial services regulation |
+| Agent QA | Automated scoring | AI-powered quality scoring on 100% of interactions |
+| Language Accessibility | 100+ languages | Real-time translation for non-English speakers |
+| PCI DSS | Level 1 | Payment card data handled in isolated PCI zone |
+| GDPR/CCPA | Consent-based | Customer data processing based on explicit consent |
+
+### Regulatory Applicability
+- **PCI DSS Level 1:** Payment card data isolation
+- **GDPR/CCPA:** Customer consent management, right to erasure
+- **TCPA:** Outbound calling compliance
+- **ADA:** Accessibility compliance for hearing-impaired customers

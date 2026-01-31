@@ -315,3 +315,43 @@ Format as markdown for easy reading.
    - Secondary compute scaled down until failover
    - Use consumption-based services where possible
    - Reserved capacity for critical components only
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2B / B2C (Operations + SRE Platform)
+- **Visibility:** Ops + SRE — site reliability engineering and operations teams
+- **Project Score:** 9.0 / 10 (Critical)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Multi-Region VNet | Peered VNets across regions, geo-redundant NSG rules |
+| Network | Private Link | All services via private endpoints in each region |
+| Network | Geo-Fencing | Traffic routing restricted to approved geographies |
+| Identity | Managed Identity | Zero-secret architecture replicated across regions |
+| Identity | RBAC | Consistent role assignments across all regions |
+| Data | Cross-Region Encryption | Data encrypted in transit between regions (TLS 1.3) |
+| Data | Geo-Redundant Storage | GRS/GZRS for critical data with encryption |
+| Data | Key Vault | Per-region key vaults with geo-replication |
+| Application | Traffic Manager | Intelligent routing with health probes and failover |
+| Application | Chaos Engineering | Regular failure injection testing |
+| Monitoring | Cross-Region Sentinel | Unified security monitoring across all regions |
+| Monitoring | DR Runbook Audit | Failover execution and recovery logged and audited |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| RPO/RTO Targets | Defined | Recovery Point/Time Objectives per service tier |
+| DR Testing | Quarterly | Mandatory disaster recovery drills with documented results |
+| BCP Documentation | Maintained | Business continuity plans reviewed and updated quarterly |
+| Failover Approval | Governed | Automated failover for Tier-1, approval-based for others |
+| Data Sovereignty | Enforced | Regional data residency maintained during failover |
+| Incident Management | ITIL-aligned | Major incident process with post-mortem requirements |
+
+### Regulatory Applicability
+- **SOC 2 Type II:** Availability and processing integrity controls
+- **ISO 22301:** Business continuity management system
+- **NIST SP 800-34:** Contingency planning for IT systems
+- **Industry-Specific:** Sector-specific uptime and recovery requirements
+- **Contractual SLAs:** Customer-facing availability commitments

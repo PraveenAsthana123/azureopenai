@@ -243,3 +243,42 @@ An end-to-end IoT predictive maintenance platform that ingests sensor data from 
    - FFT for frequency domain features
    - Rolling statistics (mean, std, peak)
    - Rate of change trends
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2B / B2E (Field Operations + Internal Dashboard)
+- **Visibility:** Field Ops + Internal Dashboard — field technicians and operations management
+- **Project Score:** 8.0 / 10 (Elevated)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | OT/IT Segmentation | Air-gapped OT network, DMZ for IT/OT bridge |
+| Network | Private Link | IoT Hub, Time Series Insights, ML Workspace via private endpoints |
+| Identity | X.509 Certificates | Device identity via X.509 certs, DPS provisioning |
+| Identity | Managed Identity | Zero-secret architecture for cloud services |
+| Data | Edge Encryption | TLS 1.3 for device-to-cloud, at-rest encryption on edge |
+| Data | Sensor Data Classification | Telemetry data classified by sensitivity tier |
+| Data | Key Vault | Device certificates, encryption keys, rotation policies |
+| Application | Edge Security | Azure IoT Edge with secure boot, TPM attestation |
+| Application | Firmware Signing | Signed firmware updates with rollback protection |
+| Monitoring | Defender for IoT | OT protocol anomaly detection, device inventory |
+| Monitoring | Sentinel | IT/OT security event correlation and response |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| ISO 55000 | Aligned | Asset management lifecycle governance |
+| Sensor Calibration | Enforced | Regular calibration schedules with audit trail |
+| OT/IT Governance | Defined | Clear boundary policies between OT and IT networks |
+| Device Lifecycle | Managed | Provisioning, updates, decommissioning tracked |
+| Data Retention | Policy-based | Telemetry retention per equipment warranty + 2 years |
+| Safety Standards | IEC 62443 | Industrial cybersecurity standards compliance |
+
+### Regulatory Applicability
+- **IEC 62443:** Industrial automation and control system security
+- **ISO 55000:** Asset management system requirements
+- **NIST SP 800-82:** Guide to ICS security
+- **OSHA Standards:** Workplace safety equipment monitoring requirements
+- **ISO 27001:** Information security management for IoT infrastructure

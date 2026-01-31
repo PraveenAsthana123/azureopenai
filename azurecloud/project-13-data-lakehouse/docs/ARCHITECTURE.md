@@ -308,3 +308,43 @@ A unified data lakehouse platform built on Azure Synapse Analytics with ADLS Gen
    - Synapse: Tighter Azure integration, unified experience
    - Databricks: More advanced ML, better Spark ecosystem
    - Choice depends on existing Azure investment
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2E (Internal Data Platform)
+- **Visibility:** Internal (Data Team) — data engineers, data scientists, and analytics teams
+- **Project Score:** 8.0 / 10 (Elevated)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Network Isolation | Dedicated VNet, NSG rules, no public endpoints |
+| Network | Private Link | Synapse, ADLS Gen2, Purview, OpenAI via private endpoints |
+| Identity | Managed Identity | Zero-secret architecture for all services |
+| Identity | RBAC + ACL | Workspace and data lake ACL-based access control |
+| Data | Column-Level Security | Sensitive columns restricted by data classification |
+| Data | Dynamic Data Masking | PII/sensitive fields masked for non-privileged users |
+| Data | Encryption | AES-256 at rest (ADLS), TLS 1.3 in transit |
+| Data | Key Vault | Data encryption keys, service credentials |
+| Application | Purview Integration | Automated data discovery and classification |
+| Application | Data Quality Gates | Validation rules enforced at ingestion boundaries |
+| Monitoring | Data Lineage | End-to-end lineage tracking via Purview |
+| Monitoring | Access Audit | All data access and transformation operations logged |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Purview Data Catalog | Enforced | All datasets registered, classified, and documented |
+| Data Lineage | Tracked | End-to-end lineage from source to consumption |
+| Zone Governance | Defined | Raw/Curated/Consumption zones with promotion policies |
+| Data Quality | Monitored | Quality scores tracked per dataset with SLA thresholds |
+| Schema Governance | Versioned | Schema evolution policies with backward compatibility |
+| Data Lifecycle | Managed | Retention, archival, and purge policies per classification |
+
+### Regulatory Applicability
+- **GDPR Article 30:** Records of processing activities via data catalog
+- **CCPA:** Consumer data inventory and deletion capabilities
+- **SOX:** Financial data integrity and audit trail in lakehouse
+- **Industry-Specific:** Sector-specific data handling requirements
+- **ISO 27001:** Information security for data platform assets

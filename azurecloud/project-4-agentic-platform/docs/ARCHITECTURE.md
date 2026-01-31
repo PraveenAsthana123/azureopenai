@@ -393,3 +393,38 @@ User Request: "I'm locked out of my laptop and need to submit my expense report 
    - Approval workflows for sensitive actions
    - Escalation paths when agent is uncertain
    - User confirmation before irreversible actions
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2E (Business-to-Employee)
+- **Visibility:** Internal — enterprise workflow automation for employees
+- **Project Score:** 8.5 / 10 (Elevated)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Private Link | All backend services via private endpoints |
+| Identity | Managed Identity | System-assigned MI; no stored credentials |
+| Identity | RBAC | Function-level authorization per tool/action |
+| Identity | Entra ID | Corporate SSO with MFA enforcement |
+| Data | Key Vault | Tool credentials, API keys, connection strings |
+| Data | Encryption | AES-256 at rest, TLS 1.2 in transit |
+| Application | Approval Gates | Human-in-the-loop for high-risk actions (financial, HR, admin) |
+| Application | Action Scoping | Tools scoped to least-privilege (read vs write) |
+| Application | Rate Limiting | Per-user action limits to prevent abuse |
+| Monitoring | Full Audit Trail | Every agent action, tool invocation, and decision logged |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Workflow Audit | Complete | All multi-step workflows logged with decision reasoning |
+| Human-in-the-Loop | Mandatory | Actions above threshold require human approval |
+| Action Logging | Immutable | Tamper-proof logs of all tool executions |
+| Change Management | ITSM integrated | Workflow changes tracked via ServiceNow/Jira |
+| Tool Governance | Registry | Approved tool catalog with version control |
+
+### Regulatory Applicability
+- **SOC 2 Type II:** Workflow audit trail and access controls
+- **SOX (if financial actions):** Approval gates for financial transactions
+- **ISO 27001:** Information security management for automated workflows

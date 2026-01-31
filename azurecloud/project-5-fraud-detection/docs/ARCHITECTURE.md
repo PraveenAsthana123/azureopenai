@@ -375,3 +375,43 @@ An enterprise-grade fraud detection system combining traditional ML anomaly dete
    - SMOTE for training data
    - Cost-sensitive learning
    - Precision@Recall threshold optimization
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2C / B2B (Consumer Transactions + Merchant Partners)
+- **Visibility:** Internal (Ops) + Regulatory — fraud ops team + regulatory reporting
+- **Project Score:** 9.5 / 10 (Critical)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Network Isolation | Dedicated VNet, NSG rules, no public endpoints |
+| Network | Private Link | Event Hub, ML Workspace, Cosmos DB, OpenAI via private endpoints |
+| Identity | Managed Identity | Zero-secret architecture for all services |
+| Identity | RBAC | Strict role separation: data scientists, ops, auditors |
+| Data | PCI DSS Level 1 | Cardholder data encrypted, tokenized, masked |
+| Data | TDE | Transparent data encryption on all databases |
+| Data | Data Masking | Dynamic masking for non-privileged users |
+| Data | Key Vault | CMK for encryption, model signing keys |
+| Application | Model Governance | Signed models, tamper detection, version control |
+| Application | Explainability | SHAP + GenAI explanations for every fraud decision |
+| Monitoring | Sentinel | Real-time security event correlation |
+| Monitoring | SOX Audit Trail | Immutable decision logs with full lineage |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| SOX Compliance | Enforced | Complete audit trail for all fraud decisions |
+| FinCEN/SAR | Automated | Suspicious Activity Reports auto-generated |
+| Model Governance | ML Registry | Model versions, metrics, approvals tracked in Azure ML |
+| Explainability | Mandatory | Every fraud flag includes human-readable explanation |
+| Data Retention | 7 years | Transaction and decision data retained per regulation |
+| Bias Monitoring | Continuous | Fair lending / ECOA compliance monitoring |
+
+### Regulatory Applicability
+- **PCI DSS Level 1:** Cardholder data protection
+- **SOX:** Financial reporting integrity and audit trail
+- **BSA/AML:** Anti-money laundering screening
+- **ECOA/Fair Lending:** Bias monitoring in fraud scoring
+- **FFIEC:** Federal financial institution examination standards

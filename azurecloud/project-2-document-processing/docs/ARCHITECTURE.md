@@ -264,3 +264,39 @@ Document Upload
    - Flexible schema for different document types
    - Sub-10ms lookups for status checks
    - Change feed for real-time updates
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2B / B2E (Business-to-Business + Business-to-Employee)
+- **Visibility:** Internal + Partner Portal — employees and authorized partners
+- **Project Score:** 8.0 / 10 (Standard)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Private Link | Document Intelligence, Storage, Cosmos DB via private endpoints |
+| Network | VNet Isolation | Dedicated VNet with NSG rules, no public endpoints |
+| Identity | Managed Identity | System-assigned MI for all inter-service communication |
+| Identity | RBAC | Per-resource role assignments; document-level access control |
+| Data | Encryption at Rest | AES-256 for all stored documents and metadata |
+| Data | Encryption in Transit | TLS 1.2+ on all connections |
+| Data | Key Vault | OCR keys, storage keys, connection strings in Key Vault |
+| Data | PII Redaction | Automated PII detection and redaction before indexing |
+| Application | Content Validation | Document format validation and malware scanning on upload |
+| Monitoring | Log Analytics | Full processing pipeline audit trail |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Data Classification | Confidential | Processed documents may contain PII, financial data |
+| Document Retention | Policy-driven | Configurable retention per document type (1-7 years) |
+| PII Handling | Automated redaction | PII detected and masked before downstream processing |
+| Data Lineage | Tracked | Full lineage from upload → extraction → classification → routing |
+| Processing Audit | Complete | Every document processing step logged with timestamps |
+| Human-in-the-Loop | Confidence-based | Low-confidence extractions routed for human review |
+
+### Regulatory Applicability
+- **GDPR:** PII redaction, right to erasure for personal documents
+- **SOC 2 Type II:** Processing audit trail
+- **Industry-specific:** Configurable per document type (healthcare, financial, legal)

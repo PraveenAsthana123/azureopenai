@@ -257,3 +257,43 @@ Extract the following in JSON format:
    - Semantic diff (not just text diff)
    - Identify material vs cosmetic changes
    - Risk delta calculation
+
+## Business Domain, Security, Governance & Compliance
+
+### Business Domain
+- **Classification:** B2B / B2E (Legal Team + External Counsel)
+- **Visibility:** Legal Team + External Counsel — in-house legal and authorized outside counsel
+- **Project Score:** 8.5 / 10 (High)
+
+### Security Controls
+| Layer | Control | Implementation |
+|-------|---------|----------------|
+| Network | Network Isolation | Dedicated VNet, NSG rules, no public endpoints |
+| Network | Private Link | OpenAI, Cognitive Search, Storage via private endpoints |
+| Identity | Managed Identity | Zero-secret architecture for all Azure services |
+| Identity | RBAC + Matter-Based | Access scoped to specific legal matters and teams |
+| Data | Attorney-Client Privilege | Privileged documents tagged, access-controlled, logged |
+| Data | Encryption | AES-256 at rest, TLS 1.3 in transit for all documents |
+| Data | Privilege Log | Automated privilege logging for all document access |
+| Data | Key Vault | Document encryption keys, signing certificates |
+| Application | Content Classification | Automated privilege/confidentiality classification |
+| Application | Redaction Engine | PII/privilege redaction for document production |
+| Monitoring | Legal Hold Tracking | Preservation obligations tracked and enforced |
+| Monitoring | Audit Trail | Complete chain of custody for all legal documents |
+
+### Governance & Compliance
+| Area | Policy | Details |
+|------|--------|---------|
+| Legal Hold | Enforced | Litigation hold preservation with automated enforcement |
+| Matter Management | Tracked | All documents organized by matter with access controls |
+| Privilege Log | Automated | Attorney-client privilege assertions logged and tracked |
+| Document Retention | Policy-based | Retention schedules per document type and jurisdiction |
+| Ethical Walls | Enforced | Conflict screening and information barrier controls |
+| eDiscovery Ready | Designed | Export and production capabilities for litigation support |
+
+### Regulatory Applicability
+- **Federal Rules of Civil Procedure:** eDiscovery and preservation obligations
+- **Model Rules of Professional Conduct:** Attorney-client privilege protection
+- **GDPR/CCPA:** Personal data in contracts and legal documents
+- **SOX Section 802:** Document retention for financial contracts
+- **Industry-Specific:** Sector-specific contract requirements (healthcare, finance)
